@@ -1,0 +1,71 @@
+menu "Example Configuration"
+
+    config WIFI_SSID
+        string "WiFi SSID"
+        default "myssid"
+        help
+            SSID (network name) for the example to connect to.
+
+    config WIFI_PASSWORD
+        string "WiFi Password"
+        default "mypassword"
+        help
+            WiFi password (WPA or WPA2) for the example to use.
+
+            Can be left blank if the network has no security set.
+
+    config AWS_EXAMPLE_CLIENT_ID
+        string "AWS IoT Client ID"
+        default "myesp32"
+        help
+            AWS IoT Client ID for the example. Should be unique for every device.
+
+    choice EXAMPLE_CERT_SOURCE
+        prompt "AWS IoT Certificate Source"
+        default EXAMPLE_EMBEDDED_CERTS
+        help
+            AWS IoT requires loading of a device-specific certificate and private key,
+            and a common Root CA Certificate. These can be compiled into the example
+            app, or they can be loaded via the filesystem from an SD card.
+
+        config EXAMPLE_EMBEDDED_CERTS
+            bool "Embed into app"
+        config EXAMPLE_SDCARD_CERTS
+            bool "Load from SD card"
+            select EXAMPLE_FILESYSTEM_CERTS
+    endchoice
+
+    config EXAMPLE_GPIO_DIAGNOSTIC
+        int "Number of the GPIO input for diagnostic"
+        range 0 39
+        default 4
+        help
+            Used to demonstrate how a rollback works.
+            The selected GPIO will be configured as an input with internal pull-up enabled.
+            To trigger a rollback, this GPIO must be pulled low while the message
+            `Diagnostics (5 sec)...` which will be on first boot.
+            If GPIO is not pulled low then the operable of the app will be confirmed.
+
+    # Currently this is equivalent to EXAMPLE_SDCARD_CERTS,
+    # however eventually we want to support more filesystem
+    # sources (SPIFFS, etc.) So this hidden config item
+    # is selected whenever the item should load from filesystem.
+    config EXAMPLE_FILESYSTEM_CERTS
+        bool
+
+    config EXAMPLE_CERTIFICATE_PATH
+        string "Device Certificate Path"
+        depends on EXAMPLE_FILESYSTEM_CERTS
+        default "/sdcard/certificate.pem.crt"
+
+    config EXAMPLE_PRIVATE_KEY_PATH
+        string "Device Private Key Path"
+        depends on EXAMPLE_FILESYSTEM_CERTS
+        default "/sdcard/private.pem.key"
+
+    config EXAMPLE_ROOT_CA_PATH
+        string "Root CA Certificate Path"
+        depends on EXAMPLE_FILESYSTEM_CERTS
+        default "/sdcard/aws-root-ca.pem"
+
+endmenu
