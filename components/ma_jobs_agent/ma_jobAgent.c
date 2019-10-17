@@ -1,7 +1,9 @@
 /**
- * @file jobEngine.c
- * @brief Interacts with the AWS Jobs API to pull any relevant jobs for this Thing, parse them and store the job with any relevant info
- *          inside a struct, which is then placed into a buffer of jobs that need to be dealt with by the rest of the application
+ * @file ma_jobAgent.c
+ *
+ * @brief Interacts with the AWS Jobs API to pull any relevant jobs for this Thing,
+ * parse them and execute the job.
+ *
  * @author Jack Cripps // jackc@monitoraudio.com
  * @date 11/09/2019
  */
@@ -50,12 +52,12 @@ static const char *TAG = "ma_JobAgent";
 static const char *THING_NAME = "ESP32TestThing";
 
 /* FreeRTOS event group to signal when we are connected & ready to make a request */
-static EventGroupHandle_t wifi_event_group;
+static EventGroupHandle_t job_agent_event_group;
 
 /* The event group allows multiple bits for each event,
    but we only care about one event - are we connected
    to the AP with an IP? */
-const int CONNECTED_BIT = BIT0;
+const int WIFI_CONNECTED_BIT = BIT0;
 
 /* CA Root certificate, device ("Thing") certificate and device
  * ("Thing") key.
@@ -94,13 +96,13 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
         esp_wifi_connect();
         break;
     case SYSTEM_EVENT_STA_GOT_IP:
-        xEventGroupSetBits(wifi_event_group, CONNECTED_BIT);
+        xEventGroupSetBits(job_agent_event_group, WIFI_CONNECTED_BIT);
         break;
     case SYSTEM_EVENT_STA_DISCONNECTED:
         /* This is a workaround as ESP32 WiFi libs don't currently
            auto-reassociate. */
         esp_wifi_connect();
-        xEventGroupClearBits(wifi_event_group, CONNECTED_BIT);
+        xEventGroupClearBits(job_agent_event_group, WIFI_CONNECTED_BIT);
         break;
     default:
         break;
