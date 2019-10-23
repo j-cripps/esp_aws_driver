@@ -6,8 +6,9 @@
  * @date 11/09/2019
  */
 
-#ifndef __JOB_ENGINE_H__
-#define __JOB_ENGINE_H__
+#ifndef __JOB_AGENT_H__
+#define __JOB_AGENT_H__
+
 
 /* Function Prototypes
  * -------------------------------------------------------------------------- */
@@ -16,4 +17,4 @@ void job_agent_task(void *param);
 
 
 
-#endif /* __JOB_ENGINE_H__ */
+#endif /* __JOB_AGENT_H__ */

@@ -44,17 +44,13 @@
 #include "aws_iot_jobs_interface.h"
 
 
+#define COUNT_OF(x) ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
+
 /* -------------------------------------------------------------------------- */
 
 
 #define EXAMPLE_WIFI_SSID "Monitor Audio WiFi"
 #define EXAMPLE_WIFI_PASS "des1gnf0rs0und"
-
-
-/* -------------------------------------------------------------------------- */
-
-
-#define COUNT_OF(x) ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
 
 
 /* -------------------------------------------------------------------------- */
@@ -93,6 +89,28 @@ char HostAddress[255] = AWS_IOT_MQTT_HOST;
  */
 uint32_t port = AWS_IOT_MQTT_PORT;
 
+/* AWS Client Information */
+AWS_IoT_Client client;
+IoT_Client_Init_Params mqttInitParams;
+IoT_Client_Connect_Params connectParams;
+IoT_Publish_Message_Params paramsQOS0;
+
+/* AWS test variables */
+char testPayload[32];
+const char *TEST_TOPIC = "test_topic/esp32";
+const uint8_t TEST_TOPIC_LEN = strlen("test_topic/esp32");
+int32_t testVar = 0;
+
+/* AWS Topic Buffers */
+char getRejectedSubBuf[128];
+char getAcceptedSubBuf[128];
+char getJobAcceptedSubBuf[128];
+char getNotifyJobSubBuf[128];
+char tempJobBuf[128];
+
+/* Jsmn JSON Parser */
+jsmn_parser jParser;
+jsmntok_t jTokens[128];
 
 /* Private Function Prototypes
  * -------------------------------------------------------------------------- */
@@ -106,8 +124,20 @@ static bool diagnostic(void);
 static void bootValidityCheck(void);
 static esp_err_t nvsBootCheck(void);
 static void otaBootCheck(void);
+
 void disconnectCallbackHandler(AWS_IoT_Client *pClient, void *data);
+void awsGetRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                   IoT_Publish_Message_Params *params, void *pData);
+void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                   IoT_Publish_Message_Params *params, void *pData);
+void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                      IoT_Publish_Message_Params *params, void *pData);
+void awsProcessJob(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                   IoT_Publish_Message_Params *params, void *pData);
 static void connectToAWS(void);
+
+
+
 
 
 /* -------------------------------------------------------------------------- */
@@ -256,37 +286,146 @@ void disconnectCallbackHandler(AWS_IoT_Client *pClient, void *data)
     ESP_LOGW(TAG, "MQTT Disconnect");
     IoT_Error_t rc = FAILURE;
 
-    if(NULL == pClient) {
+    if (NULL == pClient)
+    {
         return;
     }
 
-    if(aws_iot_is_autoreconnect_enabled(pClient)) {
+    if (aws_iot_is_autoreconnect_enabled(pClient))
+    {
         ESP_LOGI(TAG, "Auto Reconnect is enabled, Reconnecting attempt will start now");
-    } else {
+    }
+    else
+    {
         ESP_LOGW(TAG, "Auto Reconnect not enabled. Starting manual reconnect...");
         rc = aws_iot_mqtt_attempt_reconnect(pClient);
-        if(NETWORK_RECONNECTED == rc) {
+        if(NETWORK_RECONNECTED == rc)
+        {
             ESP_LOGW(TAG, "Manual Reconnect Successful");
-        } else {
+        }
+        else
+        {
             ESP_LOGW(TAG, "Manual Reconnect Failed - %d", rc);
         }
     }
 }
 
 
+void awsGetRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                   IoT_Publish_Message_Params *params, void *pData)
+{
+	ESP_LOGW(TAG, "\n Rejected: %.*s\t%.*s\n", topicNameLen, topicName, (int) params->payloadLen, (char *)params->payload);
+
+	// Check if a message has been received with any data inside
+	if ((params->payloadLen) <= 0)
+	{
+		ESP_LOGW(TAG, "Subscription Callback: Message payload has length of 0");
+	}
+	else
+	{
+
+	}
+}
+
+
+void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                   IoT_Publish_Message_Params *params, void *pData)
+{
+	ESP_LOGI(TAG, "\n Accepted: %.*s\t%.*s\n", topicNameLen, topicName, (int) params->payloadLen, (char *)params->payload);
+
+	// Check if a message has been received with any data inside
+	if ((params->payloadLen) <= 0)
+	{
+		ESP_LOGW(TAG, "Subscription Callback: Message payload has length of 0");
+	}
+	else
+	{
+		jsmn_init(&jParser);
+		int r = jsmn_parse(&jParser, params->payload, params->payloadLen, jTokens, COUNT_OF(jTokens));
+
+		/* Check if parsed json is valid */
+		if (r < 0)
+		{
+			ESP_LOGE(TAG, "Job Accepted Callback: Failed to parse JSON: %d", r);
+			return;
+		}
+
+		if ((r < 1) || (jTokens[0].type != JSMN_OBJECT))
+		{
+			ESP_LOGE(TAG, "Job Accepted Callback: Expected object");
+			return;
+		}
+
+		/* Search through JSON for in progress jobs, as these need dealing with first */
+		jsmntok_t *inProgressToken = findToken("inProgressJobs", params->payload, &jTokens[0]);
+		if (inProgressToken != NULL)
+		{
+			if (inProgressToken->end - inProgressToken->start < 3)
+			{
+				ESP_LOGI(TAG, "No in progress jobs");
+			}
+			else
+			{
+				ESP_LOGI(TAG, "In progress jobs present");
+				strncpy(&tempJobBuf[0], &params->payload[inProgressToken->start], (inProgressToken->end - inProgressToken->start));
+				tempJobBuf[inProgressToken->end - inProgressToken->start] = '\0';
+				ESP_LOGI(TAG, "Found token: %s", tempJobBuf);
+			}
+		}
+		else
+		{
+			ESP_LOGE(TAG, "Token not found");
+		}
+
+		/* Search through JSON for queued jobs */
+		jsmntok_t *queuedToken = findToken("queuedJobs", params->payload, &jTokens[0]);
+		if (queuedToken != NULL)
+		{
+			if (queuedToken->end - queuedToken->start < 3)
+			{
+				ESP_LOGI(TAG, "No queued jobs");
+			}
+			else
+			{
+				ESP_LOGI(TAG, "Queued jobs present");
+				strncpy(&tempJobBuf[0], &params->payload[queuedToken->start], (queuedToken->end - queuedToken->start));
+				tempJobBuf[queuedToken->end - queuedToken->start] = '\0';
+				ESP_LOGI(TAG, "Found token: %s", tempJobBuf);
+			}
+		}
+		else
+		{
+			ESP_LOGE(TAG, "Token not found");
+		}
+	}
+}
+
+
+void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                   IoT_Publish_Message_Params *params, void *pData)
+{
+	ESP_LOGI(TAG, "\n Job Accepted: %.*s\t%.*s\n", topicNameLen, topicName, (int) params->payloadLen, (char *)params->payload);
+
+	// Check if a message has been received with any data inside
+	if ((params->payloadLen) <= 0)
+	{
+		ESP_LOGW(TAG, "Subscription Callback: Message payload has length of 0");
+	}
+	else
+	{
+
+	}
+}
+
+
+
+
 static void connectToAWS(void)
 {
-	char cPayload[100];
-	const char *TEST_TOPIC = "test_topic/esp32";
-	const uint8_t TEST_TOPIC_LEN = strlen(TEST_TOPIC);
-
 	IoT_Error_t rc = FAILURE;
 
-    AWS_IoT_Client client;
-    IoT_Client_Init_Params mqttInitParams = iotClientInitParamsDefault;
-    IoT_Client_Connect_Params connectParams = iotClientConnectParamsDefault;
-
-    IoT_Publish_Message_Params paramsQOS0;
+	mqttInitParams = iotClientInitParamsDefault;
+	connectParams = iotClientConnectParamsDefault;
 
     ESP_LOGI(TAG, "AWS IoT SDK Version %d.%d.%d-%s", VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH, VERSION_TAG);
 
@@ -305,7 +444,7 @@ static void connectToAWS(void)
     mqttInitParams.disconnectHandlerData = NULL;
 
     rc = aws_iot_mqtt_init(&client, &mqttInitParams);
-    if(SUCCESS != rc)
+    if (SUCCESS != rc)
     {
         ESP_LOGE(TAG, "aws_iot_mqtt_init returned error : %d ", rc);
         abort();
@@ -323,7 +462,7 @@ static void connectToAWS(void)
 	do
 	{
 		rc = aws_iot_mqtt_connect(&client, &connectParams);
-		if(SUCCESS != rc)
+		if (SUCCESS != rc)
 		{
 			ESP_LOGE(TAG, "Error(%d) connecting to %s:%d", rc, mqttInitParams.pHostURL, mqttInitParams.port);
 			vTaskDelay(1000 / portTICK_PERIOD_MS);
@@ -336,17 +475,37 @@ static void connectToAWS(void)
 	 *  #AWS_IOT_MQTT_MAX_RECONNECT_WAIT_INTERVAL
 	 */
 	rc = aws_iot_mqtt_autoreconnect_set_status(&client, true);
-	if(SUCCESS != rc)
+	if (SUCCESS != rc)
 	{
 		ESP_LOGE(TAG, "Unable to set Auto Reconnect to true - %d", rc);
 		abort();
 	}
 
     paramsQOS0.qos = QOS0;
-    paramsQOS0.payload = (void *) cPayload;
+    paramsQOS0.payload = (void *) testPayload;
     paramsQOS0.isRetained = 0;
 
-    while((NETWORK_ATTEMPTING_RECONNECT == rc || NETWORK_RECONNECTED == rc || SUCCESS == rc))
+    /* Create and subscribe to job topics */
+    snprintf(getRejectedSubBuf, COUNT_OF(getRejectedSubBuf), "$aws/things/%s/jobs/get/rejected", THING_NAME);
+    rc = aws_iot_mqtt_subscribe(&client, getRejectedSubBuf, COUNT_OF(getRejectedSubBuf), QOS0,
+    							awsGetRejectedCallbackHandler, NULL);
+
+    snprintf(getAcceptedSubBuf, COUNT_OF(getAcceptedSubBuf), "$aws/things/%s/jobs/get/accepted", THING_NAME);
+    rc = aws_iot_mqtt_subscribe(&client, getAcceptedSubBuf, COUNT_OF(getAcceptedSubBuf), QOS0,
+    							awsGetAcceptedCallbackHandler, NULL);
+
+    snprintf(getJobAcceptedSubBuf, COUNT_OF(getJobAcceptedSubBuf), "$aws/things/%s/jobs/+/get/accepted", THING_NAME);
+    rc = aws_iot_mqtt_subscribe(&client, getJobAcceptedSubBuf, COUNT_OF(getJobAcceptedSubBuf), QOS0,
+        						awsJobGetAcceptedCallbackHandler, NULL);
+
+    if (SUCCESS != rc)
+	{
+		ESP_LOGE(TAG, "Unable to subscribe to AWS Jobs service: %d", rc);
+		abort();
+	}
+
+    /* Loop for AWS processing stage */
+    while ((NETWORK_ATTEMPTING_RECONNECT == rc || NETWORK_RECONNECTED == rc || SUCCESS == rc))
     {
     	ESP_LOGI(TAG, "In AWS processing loop");
 
@@ -359,12 +518,48 @@ static void connectToAWS(void)
             continue;
         }
 
-        sprintf(cPayload, "Hello");
-        paramsQOS0.payloadLen = strlen(cPayload);
-        rc = aws_iot_mqtt_publish(&client, TEST_TOPIC, TEST_TOPIC_LEN, &paramsQOS0);
+//        testVar++;
+//        sprintf(testPayload, "Hello %d", testVar);
+//        paramsQOS0.payload = (void *)testPayload;
+//        paramsQOS0.payloadLen = strlen(testPayload);
+//        rc = aws_iot_mqtt_publish(&client, TEST_TOPIC, TEST_TOPIC_LEN, &paramsQOS0);
+//        if (rc != SUCCESS)
+//		{
+//			ESP_LOGE(TAG, "Error subscribing to all jobs: %d", rc);
+//			abort();
+//		}
+
+        rc = aws_iot_jobs_send_query(&client, QOS0, THING_NAME, NULL, NULL, tempJobBuf, COUNT_OF(tempJobBuf),
+									 NULL, NULL, JOB_GET_PENDING_TOPIC);
 
         ESP_LOGI(TAG, "Stack remaining for task '%s' is %d bytes", pcTaskGetTaskName(NULL), uxTaskGetStackHighWaterMark(NULL));
         vTaskDelay(5000 / portTICK_PERIOD_MS);
+    }
+
+    /* Unsubscribe from all AWS services */
+    rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getRejectedSubBuf);
+    rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getAcceptedSubBuf);
+    rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getJobAcceptedSubBuf);
+    if (SUCCESS != rc)
+	{
+		ESP_LOGE(TAG, "Unable to unsubscribe from AWS Jobs service: %d", rc);
+		abort();
+	}
+    else
+    {
+    	ESP_LOGI(TAG, "Unsubscribed from AWS jobs services");
+    }
+
+    /* Disconnect from AWS */
+    rc = aws_iot_mqtt_disconnect(&client);
+    if (SUCCESS != rc)
+	{
+		ESP_LOGE(TAG, "Unable to disconnect from AWS: %d", rc);
+		abort();
+	}
+    else
+    {
+    	ESP_LOGI(TAG, "Disconnected from AWS");
     }
 }
 
@@ -404,7 +599,7 @@ void job_agent_task(void *param)
 			continue;
 		}
 
-		/* Connect to AWS */
+		/* Connect to AWS and process jobs*/
 		connectToAWS();
 
 		ESP_LOGE(TAG, "An error occurred in the main loop.");
