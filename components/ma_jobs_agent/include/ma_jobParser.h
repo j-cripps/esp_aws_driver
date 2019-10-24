@@ -8,10 +8,8 @@
 #ifndef __JOB_PARSER_H__
 #define __JOB_PARSER_H__
 
+#include "jsmn.h"
 
-static void jobQueryParser(jsmn_parser *pJsmnParser, char *topicName, uint16_t topicNameLen, IoT_Publish_Message_Params *params, void *pData);
-static void jobDescriptionParser();
-static void jobExecutionParser();
-
+jsmntok_t* findJsonToken(int numTokens, const char *key, const char *jsonString, jsmntok_t *token);
 
 #endif /*__JOB_PARSER_H__*/

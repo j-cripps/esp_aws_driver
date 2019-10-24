@@ -27,6 +27,9 @@
 #include "esp_event_loop.h"
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "esp_ota_ops.h"
+#include "esp_http_client.h"
+#include "esp_https_ota.h"
 
 #include "jsmn.h"
 
@@ -105,8 +108,8 @@ int32_t testVar = 0;
 char getRejectedSubBuf[128];
 char getAcceptedSubBuf[128];
 char getJobAcceptedSubBuf[128];
-char getNotifyJobSubBuf[128];
 char tempJobBuf[128];
+char tempStringBuf[256];
 
 /* Jsmn JSON Parser */
 jsmn_parser jParser;
@@ -116,6 +119,7 @@ jsmntok_t jTokens[128];
  * -------------------------------------------------------------------------- */
 
 
+static jsmntok_t* findJsonToken(int numTokens, const char *key, const char *jsonString, jsmntok_t *token);
 static void __attribute__((noreturn)) task_fatal_error(void);
 static esp_err_t event_handler(void *ctx, system_event_t *event);
 static bool wifiProvisionedCheck(void);
@@ -126,6 +130,7 @@ static esp_err_t nvsBootCheck(void);
 static void otaBootCheck(void);
 
 void disconnectCallbackHandler(AWS_IoT_Client *pClient, void *data);
+
 void awsGetRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                    IoT_Publish_Message_Params *params, void *pData);
 void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
@@ -142,6 +147,32 @@ static void connectToAWS(void);
 
 /* -------------------------------------------------------------------------- */
 
+jsmntok_t* findJsonToken(int numTokens, const char *key, const char *jsonString, jsmntok_t *token)
+{
+	jsmntok_t *result = token;
+	int16_t i;
+
+	if (token->type != JSMN_OBJECT)
+	{
+		ESP_LOGW(TAG, "Token was not an object.");
+		return NULL;
+	}
+
+	if (token->size == 0)
+	{
+		return NULL;
+	}
+
+	for (i = 0; i < numTokens; ++i)
+	{
+		if (jsoneq(jsonString, result, key) == 0)
+		{
+			return result + 1;
+		}
+	}
+
+	return NULL;
+}
 
 static void __attribute__((noreturn)) task_fatal_error(void)
 {
@@ -340,6 +371,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 	}
 	else
 	{
+		/* Initialise jsmn parser and check it is valid */
 		jsmn_init(&jParser);
 		int r = jsmn_parse(&jParser, params->payload, params->payloadLen, jTokens, COUNT_OF(jTokens));
 
@@ -360,16 +392,15 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 		jsmntok_t *inProgressToken = findToken("inProgressJobs", params->payload, &jTokens[0]);
 		if (inProgressToken != NULL)
 		{
-			if (inProgressToken->end - inProgressToken->start < 3)
+			if (inProgressToken->size == 0)
 			{
 				ESP_LOGI(TAG, "No in progress jobs");
 			}
 			else
 			{
-				ESP_LOGI(TAG, "In progress jobs present");
-				strncpy(&tempJobBuf[0], &params->payload[inProgressToken->start], (inProgressToken->end - inProgressToken->start));
-				tempJobBuf[inProgressToken->end - inProgressToken->start] = '\0';
-				ESP_LOGI(TAG, "Found token: %s", tempJobBuf);
+				strncpy(&tempStringBuf[0], &params->payload[inProgressToken->start], (inProgressToken->end - inProgressToken->start));
+				tempStringBuf[inProgressToken->end - inProgressToken->start] = '\0';
+				ESP_LOGI(TAG, "Size: %d, In progress jobs: %s", inProgressToken->size, tempStringBuf);
 			}
 		}
 		else
@@ -381,16 +412,40 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 		jsmntok_t *queuedToken = findToken("queuedJobs", params->payload, &jTokens[0]);
 		if (queuedToken != NULL)
 		{
-			if (queuedToken->end - queuedToken->start < 3)
+			if (queuedToken->size == 0)
 			{
 				ESP_LOGI(TAG, "No queued jobs");
 			}
 			else
 			{
-				ESP_LOGI(TAG, "Queued jobs present");
-				strncpy(&tempJobBuf[0], &params->payload[queuedToken->start], (queuedToken->end - queuedToken->start));
-				tempJobBuf[queuedToken->end - queuedToken->start] = '\0';
-				ESP_LOGI(TAG, "Found token: %s", tempJobBuf);
+				strncpy(&tempStringBuf[0], &params->payload[queuedToken->start], (queuedToken->end - queuedToken->start));
+				tempStringBuf[queuedToken->end - queuedToken->start] = '\0';
+				ESP_LOGI(TAG, "Size: %d, Queued jobs: %s", queuedToken->size, tempStringBuf);
+
+				/* Currently work through buffer from first job object */
+
+				/* Since jobs are stored as objects within an array, search forwards to find next object(job) */
+				jsmntok_t *jobToken = queuedToken;
+
+				while (jobToken->type != JSMN_OBJECT)
+				{
+					jobToken++;
+				}
+
+				/* Job found */
+				strncpy(&tempStringBuf[0], &params->payload[jobToken->start], (jobToken->end - jobToken->start));
+				tempStringBuf[jobToken->end - jobToken->start] = '\0';
+				ESP_LOGI(TAG, "Size: %d, Job: %s", jobToken->size, tempStringBuf);
+
+				jsmntok_t *jobIdToken = findToken("jobId", params->payload, jobToken);
+				strncpy(&tempStringBuf[0], &params->payload[jobIdToken->start], (jobIdToken->end - jobIdToken->start));
+				tempStringBuf[jobIdToken->end - jobIdToken->start] = '\0';
+				ESP_LOGI(TAG, "Job Id: %s", tempStringBuf);
+
+				/* Trigger job execution by asking AWS for job document.
+				 * - Job execution takes place in awsJobGetAcceptedCallback */
+				IoT_Error_t rc = aws_iot_jobs_describe(pClient, QOS0, THING_NAME, tempStringBuf, JOB_DESCRIBE_TOPIC,
+													   tempJobBuf, COUNT_OF(tempJobBuf), NULL, 0);
 			}
 		}
 		else
@@ -413,11 +468,65 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 	}
 	else
 	{
+		/* Initialise jsmn parser and check it is valid */
+		jsmn_init(&jParser);
+		int r = jsmn_parse(&jParser, params->payload, params->payloadLen, jTokens, COUNT_OF(jTokens));
 
+		/* Check if parsed json is valid */
+		if (r < 0)
+		{
+			ESP_LOGE(TAG, "Job Accepted Callback: Failed to parse JSON: %d", r);
+			return;
+		}
+
+		if ((r < 1) || (jTokens[0].type != JSMN_OBJECT))
+		{
+			ESP_LOGE(TAG, "Job Accepted Callback: Expected object");
+			return;
+		}
+
+		/* Search through AWS response for jobDocument */
+
+		/* First must find execution document */
+		jsmntok_t *execDocToken = findToken("execution", params->payload, &jTokens[0]);
+		strncpy(&tempStringBuf[0], &params->payload[execDocToken->start], (execDocToken->end - execDocToken->start));
+		tempStringBuf[execDocToken->end - execDocToken->start] = '\0';
+		ESP_LOGI(TAG, "Exec Doc: %s", tempStringBuf);
+
+		/* Then find job document inside execution document */
+		jsmntok_t *jobDocToken = findToken("jobDocument", params->payload, execDocToken);
+		strncpy(&tempStringBuf[0], &params->payload[jobDocToken->start], (jobDocToken->end - jobDocToken->start));
+		tempStringBuf[jobDocToken->end - jobDocToken->start] = '\0';
+		ESP_LOGI(TAG, "Job Doc: %s", tempStringBuf);
+
+		/* Then find job type */
+		jsmntok_t *jobTypeToken = findToken("operation", params->payload, jobDocToken);
+		strncpy(&tempStringBuf[0], &params->payload[jobTypeToken->start], (jobTypeToken->end - jobTypeToken->start));
+		tempStringBuf[jobTypeToken->end - jobTypeToken->start] = '\0';
+		ESP_LOGI(TAG, "Job Type: %s", tempStringBuf);
+
+		if (strcmp(tempStringBuf, "ota") == 0)
+		{
+			/* For OTA we expect url contained in job doc so search for it*/
+			jsmntok_t *urlToken = findToken("url", params->payload, jobDocToken);
+			strncpy(&tempStringBuf[0], &params->payload[urlToken->start], (urlToken->end - urlToken->start));
+			tempStringBuf[urlToken->end - urlToken->start] = '\0';
+			ESP_LOGI(TAG, "url: %s", tempStringBuf);
+		}
+		else if (strcmp(tempStringBuf, "awsMsg") == 0)
+		{
+
+		}
+		else if (strcmp(tempStringBuf, "reboot") == 0)
+		{
+
+		}
+		else
+		{
+			ESP_LOGE(TAG, "Job operation type not found: %s", tempStringBuf);
+		}
 	}
 }
-
-
 
 
 static void connectToAWS(void)

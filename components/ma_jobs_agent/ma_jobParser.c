@@ -4,7 +4,7 @@
  * @author Jack Cripps // jackc@monitoraudio.com
  * @date 21/10/2019
  */
-
+#include "jsmn.h"
 #include "ma_jobParser.h"
 
 #include <stdio.h>
@@ -12,62 +12,35 @@
 #include <ctype.h>
 #include <unistd.h>
 
-#define COUNT_OF(x) ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
+#include "esp_log.h"
 
 
-enum state_code lookupTransition(enum state_code state, enum ret_code ret)
+
+static const char *TAG = "ma_JobParser";
+
+jsmntok_t* findJsonToken(int numTokens, const char *key, const char *jsonString, jsmntok_t *token)
 {
-	enum state_code nextState = fsmError;
+	jsmntok_t *result = token;
+	int16_t i;
 
-	for (uint8_t i = 0; i < COUNT_OF(stateTransitions); ++i)
+	if (token->type != JSMN_OBJECT)
 	{
-		if ((stateTransitions[i].srcState == state) && (stateTransitions[i].retCode == ret))
+		ESP_LOGW(TAG, "Token was not an object.");
+		return NULL;
+	}
+
+	if (token->size == 0)
+	{
+		return NULL;
+	}
+
+	for (i = 0; i < numTokens; ++i)
+	{
+		if (jsoneq(jsonString, result, key) == 0)
 		{
-			nextState = stateTransitions[i].destState;
-			break;
+			return result + 1;
 		}
 	}
 
-	return nextState;
+	return NULL;
 }
-
-
-int entryState(void)
-{
-	enum ret_code ret = failure;
-
-	return ret;
-}
-
-
-int queryState(void)
-{
-	enum ret_code ret = failure;
-
-	return ret;
-}
-
-
-int describeState(void)
-{
-	enum ret_code ret = failure;
-
-	return ret;
-}
-
-
-int executeState(void)
-{
-	enum ret_code ret = failure;
-
-	return ret;
-}
-
-
-int finishState(void)
-{
-	enum ret_code ret = failure;
-
-	return ret;
-}
-
