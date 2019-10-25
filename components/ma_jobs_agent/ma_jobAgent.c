@@ -11,6 +11,8 @@
 
 #include "ma_jobAgent.h"
 
+#include "ma_jobOTA.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -22,23 +24,21 @@
 #include "freertos/task.h"
 #include "freertos/event_groups.h"
 #include "esp_system.h"
+#include "esp_log.h"
+
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_event_loop.h"
-#include "esp_log.h"
 #include "driver/gpio.h"
 #include "esp_ota_ops.h"
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
-
-#include "jsmn.h"
-
+#include "esp_flash_partitions.h"
+#include "esp_partition.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 
-#include "esp_ota_ops.h"
-#include "esp_flash_partitions.h"
-#include "esp_partition.h"
+#include "jsmn.h"
 
 #include "aws_iot_config.h"
 #include "aws_iot_log.h"
