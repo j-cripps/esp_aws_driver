@@ -118,8 +118,7 @@ jsmntok_t jTokens[128];
 /* Private Function Prototypes
  * -------------------------------------------------------------------------- */
 
-
-static jsmntok_t* findJsonToken(int numTokens, const char *key, const char *jsonString, jsmntok_t *token);
+static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source, char *dest, uint16_t destLen);
 static void __attribute__((noreturn)) task_fatal_error(void);
 static esp_err_t event_handler(void *ctx, system_event_t *event);
 static bool wifiProvisionedCheck(void);
@@ -147,32 +146,26 @@ static void connectToAWS(void);
 
 /* -------------------------------------------------------------------------- */
 
-jsmntok_t* findJsonToken(int numTokens, const char *key, const char *jsonString, jsmntok_t *token)
+static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source, char *dest, uint16_t destLen)
 {
-	jsmntok_t *result = token;
-	int16_t i;
+	uint16_t sourceLen = pToken->end - pToken->start;
 
-	if (token->type != JSMN_OBJECT)
+	// Don't copy if no room in dest buffer for whole string + null terminator */
+	if (sourceLen + 1 > destLen)
 	{
-		ESP_LOGW(TAG, "Token was not an object.");
-		return NULL;
+		return false;
+	}
+	else
+	{
+		/* Copy from start of token in buffer over to destination*/
+		memcpy(dest, &source[pToken->start], sourceLen);
+		/* Append null terminator */
+		dest[sourceLen] = '\0';
 	}
 
-	if (token->size == 0)
-	{
-		return NULL;
-	}
-
-	for (i = 0; i < numTokens; ++i)
-	{
-		if (jsoneq(jsonString, result, key) == 0)
-		{
-			return result + 1;
-		}
-	}
-
-	return NULL;
+	return true;
 }
+
 
 static void __attribute__((noreturn)) task_fatal_error(void)
 {
@@ -330,7 +323,7 @@ void disconnectCallbackHandler(AWS_IoT_Client *pClient, void *data)
     {
         ESP_LOGW(TAG, "Auto Reconnect not enabled. Starting manual reconnect...");
         rc = aws_iot_mqtt_attempt_reconnect(pClient);
-        if(NETWORK_RECONNECTED == rc)
+        if (NETWORK_RECONNECTED == rc)
         {
             ESP_LOGW(TAG, "Manual Reconnect Successful");
         }
@@ -362,7 +355,8 @@ void awsGetRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                    IoT_Publish_Message_Params *params, void *pData)
 {
-	ESP_LOGI(TAG, "\n Accepted: %.*s\t%.*s\n", topicNameLen, topicName, (int) params->payloadLen, (char *)params->payload);
+	/* ESP_LOGI(TAG, "\n Accepted: %.*s\t%.*s\n", topicNameLen, topicName, (int) params->payloadLen, (char *)params->payload); */
+	bool ret = false;
 
 	// Check if a message has been received with any data inside
 	if ((params->payloadLen) <= 0)
@@ -398,8 +392,12 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 			}
 			else
 			{
-				strncpy(&tempStringBuf[0], &params->payload[inProgressToken->start], (inProgressToken->end - inProgressToken->start));
-				tempStringBuf[inProgressToken->end - inProgressToken->start] = '\0';
+				ret = extractJsonTokenAsString(inProgressToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+				if (!ret)
+				{
+					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+					return;
+				}
 				ESP_LOGI(TAG, "Size: %d, In progress jobs: %s", inProgressToken->size, tempStringBuf);
 			}
 		}
@@ -418,8 +416,12 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 			}
 			else
 			{
-				strncpy(&tempStringBuf[0], &params->payload[queuedToken->start], (queuedToken->end - queuedToken->start));
-				tempStringBuf[queuedToken->end - queuedToken->start] = '\0';
+				ret = extractJsonTokenAsString(queuedToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+				if (!ret)
+				{
+					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+					return;
+				}
 				ESP_LOGI(TAG, "Size: %d, Queued jobs: %s", queuedToken->size, tempStringBuf);
 
 				/* Currently work through buffer from first job object */
@@ -433,13 +435,21 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 				}
 
 				/* Job found */
-				strncpy(&tempStringBuf[0], &params->payload[jobToken->start], (jobToken->end - jobToken->start));
-				tempStringBuf[jobToken->end - jobToken->start] = '\0';
+				ret = extractJsonTokenAsString(jobToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+				if (!ret)
+				{
+					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+					return;
+				}
 				ESP_LOGI(TAG, "Size: %d, Job: %s", jobToken->size, tempStringBuf);
 
 				jsmntok_t *jobIdToken = findToken("jobId", params->payload, jobToken);
-				strncpy(&tempStringBuf[0], &params->payload[jobIdToken->start], (jobIdToken->end - jobIdToken->start));
-				tempStringBuf[jobIdToken->end - jobIdToken->start] = '\0';
+				ret = extractJsonTokenAsString(jobIdToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+				if (!ret)
+				{
+					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+					return;
+				}
 				ESP_LOGI(TAG, "Job Id: %s", tempStringBuf);
 
 				/* Trigger job execution by asking AWS for job document.
@@ -459,7 +469,8 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                    IoT_Publish_Message_Params *params, void *pData)
 {
-	ESP_LOGI(TAG, "\n Job Accepted: %.*s\t%.*s\n", topicNameLen, topicName, (int) params->payloadLen, (char *)params->payload);
+	/* ESP_LOGI(TAG, "\n Job Accepted: %.*s\t%.*s\n", topicNameLen, topicName, (int) params->payloadLen, (char *)params->payload); */
+	bool ret  = false;
 
 	// Check if a message has been received with any data inside
 	if ((params->payloadLen) <= 0)
@@ -489,29 +500,46 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 
 		/* First must find execution document */
 		jsmntok_t *execDocToken = findToken("execution", params->payload, &jTokens[0]);
-		strncpy(&tempStringBuf[0], &params->payload[execDocToken->start], (execDocToken->end - execDocToken->start));
-		tempStringBuf[execDocToken->end - execDocToken->start] = '\0';
+		ret = extractJsonTokenAsString(execDocToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+		if (!ret)
+		{
+			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+			return;
+		}
 		ESP_LOGI(TAG, "Exec Doc: %s", tempStringBuf);
 
 		/* Then find job document inside execution document */
 		jsmntok_t *jobDocToken = findToken("jobDocument", params->payload, execDocToken);
-		strncpy(&tempStringBuf[0], &params->payload[jobDocToken->start], (jobDocToken->end - jobDocToken->start));
-		tempStringBuf[jobDocToken->end - jobDocToken->start] = '\0';
+		ret = extractJsonTokenAsString(jobDocToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+		if (!ret)
+		{
+			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+			return;
+		}
 		ESP_LOGI(TAG, "Job Doc: %s", tempStringBuf);
 
 		/* Then find job type */
 		jsmntok_t *jobTypeToken = findToken("operation", params->payload, jobDocToken);
-		strncpy(&tempStringBuf[0], &params->payload[jobTypeToken->start], (jobTypeToken->end - jobTypeToken->start));
-		tempStringBuf[jobTypeToken->end - jobTypeToken->start] = '\0';
+		ret = extractJsonTokenAsString(jobTypeToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+		if (!ret)
+		{
+			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+			return;
+		}
 		ESP_LOGI(TAG, "Job Type: %s", tempStringBuf);
 
 		if (strcmp(tempStringBuf, "ota") == 0)
 		{
 			/* For OTA we expect url contained in job doc so search for it*/
 			jsmntok_t *urlToken = findToken("url", params->payload, jobDocToken);
-			strncpy(&tempStringBuf[0], &params->payload[urlToken->start], (urlToken->end - urlToken->start));
-			tempStringBuf[urlToken->end - urlToken->start] = '\0';
+			ret = extractJsonTokenAsString(urlToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+			if (!ret)
+			{
+				ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+				return;
+			}
 			ESP_LOGI(TAG, "url: %s", tempStringBuf);
+
 		}
 		else if (strcmp(tempStringBuf, "awsMsg") == 0)
 		{
@@ -639,7 +667,7 @@ static void connectToAWS(void)
 //		}
 
         rc = aws_iot_jobs_send_query(&client, QOS0, THING_NAME, NULL, NULL, tempJobBuf, COUNT_OF(tempJobBuf),
-									 NULL, NULL, JOB_GET_PENDING_TOPIC);
+									 NULL, 0, JOB_GET_PENDING_TOPIC);
 
         ESP_LOGI(TAG, "Stack remaining for task '%s' is %d bytes", pcTaskGetTaskName(NULL), uxTaskGetStackHighWaterMark(NULL));
         vTaskDelay(5000 / portTICK_PERIOD_MS);
