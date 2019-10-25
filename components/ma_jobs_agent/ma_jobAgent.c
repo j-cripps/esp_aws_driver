@@ -93,10 +93,10 @@ char HostAddress[255] = AWS_IOT_MQTT_HOST;
 uint32_t port = AWS_IOT_MQTT_PORT;
 
 /* AWS Client Information */
-AWS_IoT_Client client;
-IoT_Client_Init_Params mqttInitParams;
-IoT_Client_Connect_Params connectParams;
-IoT_Publish_Message_Params paramsQOS0;
+static AWS_IoT_Client client;
+static IoT_Client_Init_Params mqttInitParams;
+static IoT_Client_Connect_Params connectParams;
+static IoT_Publish_Message_Params paramsQOS0;
 
 /* AWS test variables */
 char testPayload[32];
@@ -112,8 +112,8 @@ char tempJobBuf[128];
 char tempStringBuf[256];
 
 /* Jsmn JSON Parser */
-jsmn_parser jParser;
-jsmntok_t jTokens[128];
+static jsmn_parser jParser;
+static jsmntok_t jTokens[128];
 
 /* Private Function Prototypes
  * -------------------------------------------------------------------------- */
@@ -316,6 +316,7 @@ void disconnectCallbackHandler(AWS_IoT_Client *pClient, void *data)
 
     if (NULL == pClient)
     {
+    	ESP_LOGE(TAG, "MQTT Disconnect, AWS client NULL");
         return;
     }
 
@@ -458,8 +459,17 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 
 				/* Trigger job execution by asking AWS for job document.
 				 * - Job execution takes place in awsJobGetAcceptedCallback */
-				IoT_Error_t rc = aws_iot_jobs_describe(pClient, QOS0, THING_NAME, tempStringBuf, JOB_DESCRIBE_TOPIC,
+				AwsIotDescribeJobExecutionRequest describeRequest;
+				describeRequest.executionNumber = 0;
+				describeRequest.includeJobDocument = true;
+				describeRequest.clientToken = NULL;
+				IoT_Error_t rc = aws_iot_jobs_describe(pClient, QOS0, THING_NAME, tempStringBuf, &describeRequest,
 													   tempJobBuf, COUNT_OF(tempJobBuf), NULL, 0);
+				if (SUCCESS != rc)
+				{
+					ESP_LOGE(TAG, "Unable to publish job description request: %d", rc);
+					taskFatalError();
+				}
 			}
 		}
 		else
