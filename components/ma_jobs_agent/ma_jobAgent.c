@@ -119,7 +119,7 @@ jsmntok_t jTokens[128];
  * -------------------------------------------------------------------------- */
 
 static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source, char *dest, uint16_t destLen);
-static void __attribute__((noreturn)) task_fatal_error(void);
+static void taskFatalError(void);
 static esp_err_t event_handler(void *ctx, system_event_t *event);
 static bool wifiProvisionedCheck(void);
 static void initialiseWifi(void);
@@ -150,7 +150,7 @@ static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source
 {
 	uint16_t sourceLen = pToken->end - pToken->start;
 
-	// Don't copy if no room in dest buffer for whole string + null terminator */
+	/* Don't copy if no room in dest buffer for whole string + null terminator */
 	if (sourceLen + 1 > destLen)
 	{
 		return false;
@@ -167,11 +167,15 @@ static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source
 }
 
 
-static void __attribute__((noreturn)) task_fatal_error(void)
+static void taskFatalError(void)
 {
-    ESP_LOGE(TAG, "Exiting task due to fatal error...");
+	while (1)
+	{
+		ESP_LOGE(TAG, "Fatal error in task, no return");
+		vTaskDelay(5000 / portTICK_PERIOD_MS);
+	}
+
     (void)vTaskDelete(NULL);
-    // while(1) {};
 }
 
 
@@ -256,7 +260,7 @@ static void bootValidityCheck(void)
 	{
 		if (ota_state == ESP_OTA_IMG_PENDING_VERIFY)
 		{
-			// Run the diagnostic function
+			/* Run the diagnostic function */
 			bool diagnostic_ok = diagnostic();
 			if (diagnostic_ok)
 			{
@@ -275,12 +279,12 @@ static void bootValidityCheck(void)
 
 static esp_err_t nvsBootCheck(void)
 {
-	// Initialise NVS.
+	/* Initialise NVS */
 	esp_err_t err = nvs_flash_init();
 	if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-		// OTA app partition table has a smaller NVS partition size than the non-OTA
-		// partition table. This size mismatch may cause NVS initialisation to fail.
-		// If this happens, we erase NVS partition and initialise NVS again.
+		/* OTA app partition table has a smaller NVS partition size than the non-OTA
+		 * partition table. This size mismatch may cause NVS initialisation to fail.
+		 * If this happens, we erase NVS partition and initialise NVS again. */
 		ESP_ERROR_CHECK(nvs_flash_erase());
 		err = nvs_flash_init();
 	}
@@ -340,7 +344,7 @@ void awsGetRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 {
 	ESP_LOGW(TAG, "\n Rejected: %.*s\t%.*s\n", topicNameLen, topicName, (int) params->payloadLen, (char *)params->payload);
 
-	// Check if a message has been received with any data inside
+	/* Check if a message has been received with any data inside */
 	if ((params->payloadLen) <= 0)
 	{
 		ESP_LOGW(TAG, "Subscription Callback: Message payload has length of 0");
@@ -358,7 +362,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 	/* ESP_LOGI(TAG, "\n Accepted: %.*s\t%.*s\n", topicNameLen, topicName, (int) params->payloadLen, (char *)params->payload); */
 	bool ret = false;
 
-	// Check if a message has been received with any data inside
+	/* Check if a message has been received with any data inside */
 	if ((params->payloadLen) <= 0)
 	{
 		ESP_LOGW(TAG, "Subscription Callback: Message payload has length of 0");
@@ -373,13 +377,13 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 		if (r < 0)
 		{
 			ESP_LOGE(TAG, "Job Accepted Callback: Failed to parse JSON: %d", r);
-			return;
+			taskFatalError();
 		}
 
 		if ((r < 1) || (jTokens[0].type != JSMN_OBJECT))
 		{
 			ESP_LOGE(TAG, "Job Accepted Callback: Expected object");
-			return;
+			taskFatalError();
 		}
 
 		/* Search through JSON for in progress jobs, as these need dealing with first */
@@ -396,7 +400,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 				if (!ret)
 				{
 					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
-					return;
+					taskFatalError();
 				}
 				ESP_LOGI(TAG, "Size: %d, In progress jobs: %s", inProgressToken->size, tempStringBuf);
 			}
@@ -420,7 +424,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 				if (!ret)
 				{
 					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
-					return;
+					taskFatalError();
 				}
 				ESP_LOGI(TAG, "Size: %d, Queued jobs: %s", queuedToken->size, tempStringBuf);
 
@@ -439,7 +443,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 				if (!ret)
 				{
 					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
-					return;
+					taskFatalError();
 				}
 				ESP_LOGI(TAG, "Size: %d, Job: %s", jobToken->size, tempStringBuf);
 
@@ -448,7 +452,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 				if (!ret)
 				{
 					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
-					return;
+					taskFatalError();
 				}
 				ESP_LOGI(TAG, "Job Id: %s", tempStringBuf);
 
@@ -472,7 +476,7 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 	/* ESP_LOGI(TAG, "\n Job Accepted: %.*s\t%.*s\n", topicNameLen, topicName, (int) params->payloadLen, (char *)params->payload); */
 	bool ret  = false;
 
-	// Check if a message has been received with any data inside
+	/* Check if a message has been received with any data inside */
 	if ((params->payloadLen) <= 0)
 	{
 		ESP_LOGW(TAG, "Subscription Callback: Message payload has length of 0");
@@ -487,13 +491,13 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 		if (r < 0)
 		{
 			ESP_LOGE(TAG, "Job Accepted Callback: Failed to parse JSON: %d", r);
-			return;
+			taskFatalError();
 		}
 
 		if ((r < 1) || (jTokens[0].type != JSMN_OBJECT))
 		{
 			ESP_LOGE(TAG, "Job Accepted Callback: Expected object");
-			return;
+			taskFatalError();
 		}
 
 		/* Search through AWS response for jobDocument */
@@ -504,7 +508,7 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 		if (!ret)
 		{
 			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
-			return;
+			taskFatalError();
 		}
 		ESP_LOGI(TAG, "Exec Doc: %s", tempStringBuf);
 
@@ -514,7 +518,7 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 		if (!ret)
 		{
 			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
-			return;
+			taskFatalError();
 		}
 		ESP_LOGI(TAG, "Job Doc: %s", tempStringBuf);
 
@@ -524,7 +528,7 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 		if (!ret)
 		{
 			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
-			return;
+			taskFatalError();
 		}
 		ESP_LOGI(TAG, "Job Type: %s", tempStringBuf);
 
@@ -536,7 +540,7 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 			if (!ret)
 			{
 				ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
-				return;
+				taskFatalError();
 			}
 			ESP_LOGI(TAG, "url: %s", tempStringBuf);
 
@@ -584,7 +588,7 @@ static void connectToAWS(void)
     if (SUCCESS != rc)
     {
         ESP_LOGE(TAG, "aws_iot_mqtt_init returned error : %d ", rc);
-        abort();
+        taskFatalError();
     }
 
     connectParams.keepAliveIntervalInSec = 10;
@@ -615,7 +619,7 @@ static void connectToAWS(void)
 	if (SUCCESS != rc)
 	{
 		ESP_LOGE(TAG, "Unable to set Auto Reconnect to true - %d", rc);
-		abort();
+		taskFatalError();
 	}
 
     paramsQOS0.qos = QOS0;
@@ -638,7 +642,7 @@ static void connectToAWS(void)
     if (SUCCESS != rc)
 	{
 		ESP_LOGE(TAG, "Unable to subscribe to AWS Jobs service: %d", rc);
-		abort();
+		taskFatalError();
 	}
 
     /* Loop for AWS processing stage */
@@ -680,7 +684,7 @@ static void connectToAWS(void)
     if (SUCCESS != rc)
 	{
 		ESP_LOGE(TAG, "Unable to unsubscribe from AWS Jobs service: %d", rc);
-		abort();
+		taskFatalError();
 	}
     else
     {
@@ -692,7 +696,7 @@ static void connectToAWS(void)
     if (SUCCESS != rc)
 	{
 		ESP_LOGE(TAG, "Unable to disconnect from AWS: %d", rc);
-		abort();
+		taskFatalError();
 	}
     else
     {
@@ -740,6 +744,6 @@ void job_agent_task(void *param)
 		connectToAWS();
 
 		ESP_LOGE(TAG, "An error occurred in the main loop.");
-		abort();
+		taskFatalError();
 	}
 }
