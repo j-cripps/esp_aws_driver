@@ -553,7 +553,6 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 				taskFatalError();
 			}
 			ESP_LOGI(TAG, "url: %s", tempStringBuf);
-
 		}
 		else if (strcmp(tempStringBuf, "awsMsg") == 0)
 		{
