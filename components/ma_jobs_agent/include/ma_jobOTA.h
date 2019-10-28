@@ -10,20 +10,11 @@
 #ifndef __ma_jobOTA__
 #define __ma_jobOTA__
 
+#include "esp_err.h"
 
 /* Function Prototypes
  * -------------------------------------------------------------------------- */
-esp_err_t httpsOtaUpdate(const char* url, const char* serverCertPemStart);
+esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart, const uint8_t* clientKeyPemStart);
 
-
-/* Function Definitions
- * -------------------------------------------------------------------------- */
-esp_err_t httpsOtaUpdate(const char* url, const char* serverCertPemStart)
-{
-    ESP_LOGI(TAG, "Starting OTA update process");
-
-    esp_err_t err = ESP_OK;
-
-}
 
 #endif /* __ma_jobOTA__ */

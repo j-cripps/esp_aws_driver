@@ -140,6 +140,8 @@ void awsProcessJob(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameL
                    IoT_Publish_Message_Params *params, void *pData);
 static void connectToAWS(void);
 
+static void unsubAndDisconnnectAWS(void);
+
 
 
 
@@ -553,6 +555,10 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 				taskFatalError();
 			}
 			ESP_LOGI(TAG, "url: %s", tempStringBuf);
+
+			unsubAndDisconnnectAWS();
+			vTaskDelay(1000 / portTICK_PERIOD_MS);
+			httpsOtaUpdate(&tempStringBuf[0], aws_root_ca_pem_start, private_pem_key_start);
 		}
 		else if (strcmp(tempStringBuf, "awsMsg") == 0)
 		{
@@ -686,30 +692,38 @@ static void connectToAWS(void)
         vTaskDelay(5000 / portTICK_PERIOD_MS);
     }
 
+    unsubAndDisconnnectAWS();
+}
+
+
+static void unsubAndDisconnnectAWS(void)
+{
+    IoT_Error_t rc = FAILURE;
+
     /* Unsubscribe from all AWS services */
     rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getRejectedSubBuf);
     rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getAcceptedSubBuf);
     rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getJobAcceptedSubBuf);
     if (SUCCESS != rc)
-	{
-		ESP_LOGE(TAG, "Unable to unsubscribe from AWS Jobs service: %d", rc);
-		taskFatalError();
-	}
+    {
+        ESP_LOGE(TAG, "Unable to unsubscribe from AWS Jobs service: %d", rc);
+        taskFatalError();
+    }
     else
     {
-    	ESP_LOGI(TAG, "Unsubscribed from AWS jobs services");
+        ESP_LOGI(TAG, "Unsubscribed from AWS jobs services");
     }
 
     /* Disconnect from AWS */
     rc = aws_iot_mqtt_disconnect(&client);
     if (SUCCESS != rc)
-	{
-		ESP_LOGE(TAG, "Unable to disconnect from AWS: %d", rc);
-		taskFatalError();
-	}
+    {
+        ESP_LOGE(TAG, "Unable to disconnect from AWS: %d", rc);
+        taskFatalError();
+    }
     else
     {
-    	ESP_LOGI(TAG, "Disconnected from AWS");
+        ESP_LOGI(TAG, "Disconnected from AWS");
     }
 }
 

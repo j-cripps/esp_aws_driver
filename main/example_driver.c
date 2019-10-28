@@ -28,5 +28,5 @@ static const char *TAG = "example_driver";
 
 void app_main()
 {
-    xTaskCreate(&job_agent_task, "job_agent_task", 9216, NULL, 5, NULL);
+    xTaskCreate(&job_agent_task, "job_agent_task", 1024 * 15, NULL, 5, NULL);
 }

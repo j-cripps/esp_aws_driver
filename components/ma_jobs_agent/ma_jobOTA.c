@@ -29,6 +29,8 @@
 #include "esp_https_ota.h"
 #include "esp_flash_partitions.h"
 #include "esp_partition.h"
+#include "nvs.h"
+#include "nvs_flash.h"
 
 
 /* -------------------------------------------------------------------------- */
@@ -46,21 +48,41 @@ static esp_err_t validate_image_header(esp_app_desc_t *new_app_info);
  * -------------------------------------------------------------------------- */
 static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
 {
+    if (new_app_info == NULL)
+    {
+        ESP_LOGE(TAG, "App info null in validation");
+        return ESP_ERR_INVALID_ARG;
+    }
 
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_app_desc_t runningAppInfo;
+    if (esp_ota_get_partition_description(running, &runningAppInfo))
+    {
+        ESP_LOGI(TAG, "Running firmware version: %s", runningAppInfo.version);
+    }
+
+    if (memcmp(new_app_info->version, runningAppInfo.version, sizeof(new_app_info->version)) == 0)
+    {
+        ESP_LOGW(TAG, "Current running version is same as new version, update failed");
+        return ESP_FAIL;
+    }
+
+    return ESP_OK;
 }
 
 
 /* Function Definitions
  * -------------------------------------------------------------------------- */
-esp_err_t httpsOtaUpdate(const char* url, const char* serverCertPemStart)
+esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart, const uint8_t* clientKeyPemStart)
 {
     ESP_LOGI(TAG, "Starting OTA update process");
 
-    //esp_err_t errFinish = ESP_OK;
+    esp_err_t errFinish = ESP_OK;
 
     esp_http_client_config_t config;
     config.url = url;
-    config.cert_pem = serverCertPemStart;
+    config.cert_pem = (char *)serverCertPemStart;
+    //config.client_key_pem = (char *)clientKeyPemStart;
 
     esp_https_ota_config_t otaConfig;
     otaConfig.http_config = &config;
@@ -72,6 +94,8 @@ esp_err_t httpsOtaUpdate(const char* url, const char* serverCertPemStart)
         ESP_LOGE(TAG, "ESP HTTPS OTA Begin failed");
         return err;
     }
+
+    ESP_LOGW(TAG, "Reached Here");
 
     esp_app_desc_t appDesc;
     err = esp_https_ota_get_img_desc(otaHandle, &appDesc);
@@ -103,6 +127,19 @@ esp_err_t httpsOtaUpdate(const char* url, const char* serverCertPemStart)
         ESP_LOGD(TAG, "Image bytes read %d", esp_https_ota_get_image_len_read(otaHandle));
     }
 
+    errFinish = esp_https_ota_finish(otaHandle);
+    if ((err == ESP_OK) && (errFinish == ESP_OK))
+    {
+        ESP_LOGI(TAG, "OTA Upgrade Successful, marked for reboot");
+
+        /* Temp test, this should occur somewhere else, at least in main task func so more control */
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        esp_restart();
+    }
+    else
+    {
+        ESP_LOGE(TAG, "OTA Upgrade failed: %d", errFinish);
+    }
 
     return err;
 }
