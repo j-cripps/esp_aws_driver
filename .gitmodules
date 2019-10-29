@@ -1,2 +1,0 @@
-[submodule "components/esp-aws-iot"]
-	url = https://github.com/espressif/esp-aws-iot.git
