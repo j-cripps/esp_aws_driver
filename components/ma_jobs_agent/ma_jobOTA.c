@@ -35,17 +35,39 @@
 
 /* -------------------------------------------------------------------------- */
 
+#define BUFFSIZE 1024
+
+/* -------------------------------------------------------------------------- */
+
 
 static const char *TAG = "ma_JobOTA";
+
+/*
+ * @brief an ota data write buffer ready to write to the flash
+ */
+static char otaWriteData[BUFFSIZE + 1] = { 0 };
 
 
 /* Private Function Prototypes
  * -------------------------------------------------------------------------- */
+static void __attribute__((noreturn)) task_fatal_error();
 static esp_err_t validate_image_header(esp_app_desc_t *new_app_info);
+static void http_cleanup(esp_http_client_handle_t client);
 
 
 /* Private Function Definitions
  * -------------------------------------------------------------------------- */
+static void __attribute__((noreturn)) task_fatal_error()
+{
+    ESP_LOGE(TAG, "Exiting task due to fatal error");
+    (void)vTaskDelete(NULL);
+
+    while (1)
+    {
+        ;
+    }
+}
+
 static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
 {
     if (new_app_info == NULL)
@@ -71,77 +93,172 @@ static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
 }
 
 
+static void http_cleanup(esp_http_client_handle_t client)
+{
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+}
+
+
 /* Function Definitions
  * -------------------------------------------------------------------------- */
 esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart, const uint8_t* clientKeyPemStart)
 {
-    ESP_LOGI(TAG, "Starting OTA update process");
+    esp_err_t err;
 
-    esp_err_t errFinish = ESP_OK;
+    esp_ota_handle_t updateHandle = 0;
+    const esp_partition_t *updatePartition = NULL;
 
-    esp_http_client_config_t config;
-    config.url = url;
-    config.cert_pem = (char *)serverCertPemStart;
-    //config.client_key_pem = (char *)clientKeyPemStart;
+    ESP_LOGI(TAG, "Starting https OTA update");
 
-    esp_https_ota_config_t otaConfig;
-    otaConfig.http_config = &config;
+    const esp_partition_t *configured = esp_ota_get_boot_partition();
+    const esp_partition_t *running = esp_ota_get_running_partition();
 
-    esp_https_ota_handle_t otaHandle = NULL;
-    esp_err_t err = esp_https_ota_begin(&otaConfig, &otaHandle);
-    if (err != ESP_OK)
+    if (configured != running)
     {
-        ESP_LOGE(TAG, "ESP HTTPS OTA Begin failed");
-        return err;
+        ESP_LOGW(TAG, "Configured OTA boot partition at offset 0x%08x, but running from offset 0x%08x",
+                 configured->address, running->address);
+        ESP_LOGW(TAG, "(This can happen if either the OTA boot data or preferred boot image become corrupted somehow.)");
+    }
+    ESP_LOGI(TAG, "Running partition type %d subtype %d (offset 0x%08x)",
+             running->type, running->subtype, running->address);
+
+    esp_http_client_config_t config = {
+            .url = url,
+            .cert_pem = (char *)serverCertPemStart
+    };
+
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (client == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to initialise HTTP connection");
+        task_fatal_error();
     }
 
-    ESP_LOGW(TAG, "Reached Here");
-
-    esp_app_desc_t appDesc;
-    err = esp_https_ota_get_img_desc(otaHandle, &appDesc);
+    err = esp_http_client_open(client, 0);
     if (err != ESP_OK)
     {
-        ESP_LOGE(TAG, "esp_https_ota_read_img_desc failed");
-        return err;
+        ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        task_fatal_error();
     }
 
-    err = validate_image_header(&appDesc);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE(TAG, "ota image header verification failed");
-        return err;
-    }
+    esp_http_client_fetch_headers(client);
 
-    /* Main body of OTA update */
+    updatePartition = esp_ota_get_next_update_partition(NULL);
+    ESP_LOGI(TAG, "Writing to partition subtype %d at offset 0x%x",
+             updatePartition->subtype, updatePartition->address);
+    assert(updatePartition != NULL);
+
+    int32_t binaryFileLength = 0;
+
+    bool imageHeaderWasChecked = false;
     while (1)
     {
-        err = esp_https_ota_perform(otaHandle);
-        if (err != ESP_ERR_HTTPS_OTA_IN_PROGRESS)
-        {
-            break;
-        }
+           int data_read = esp_http_client_read(client, otaWriteData, BUFFSIZE);
+           if (data_read < 0)
+           {
+               ESP_LOGE(TAG, "Error: SSL data read error");
+               http_cleanup(client);
+               task_fatal_error();
+           }
+           else if (data_read > 0)
+           {
+               if (imageHeaderWasChecked == false)
+               {
+                   esp_app_desc_t new_app_info;
+                   if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t))
+                   {
+                       // check current version with downloading
+                       memcpy(&new_app_info, &otaWriteData[sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t)], sizeof(esp_app_desc_t));
+                       ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
 
-        /* esp_https_ota_perform returns after every read operation which gives user the ability to
-         * monitor the status of OTA upgrade by calling esp_https_ota_get_image_len_read, which gives length of image
-         * data read so far. */
-        ESP_LOGD(TAG, "Image bytes read %d", esp_https_ota_get_image_len_read(otaHandle));
-    }
+                       esp_app_desc_t running_app_info;
+                       if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK)
+                       {
+                           ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
+                       }
 
-    errFinish = esp_https_ota_finish(otaHandle);
-    if ((err == ESP_OK) && (errFinish == ESP_OK))
-    {
-        ESP_LOGI(TAG, "OTA Upgrade Successful, marked for reboot");
+                       const esp_partition_t* last_invalid_app = esp_ota_get_last_invalid_partition();
+                       esp_app_desc_t invalid_app_info;
+                       if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK)
+                       {
+                           ESP_LOGI(TAG, "Last invalid firmware version: %s", invalid_app_info.version);
+                       }
 
-        /* Temp test, this should occur somewhere else, at least in main task func so more control */
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
-        esp_restart();
-    }
-    else
-    {
-        ESP_LOGE(TAG, "OTA Upgrade failed: %d", errFinish);
-    }
+                       // check current version with last invalid partition
+                       if (last_invalid_app != NULL)
+                       {
+                           if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0)
+                           {
+                               ESP_LOGW(TAG, "New version is the same as invalid version.");
+                               ESP_LOGW(TAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.", invalid_app_info.version);
+                               ESP_LOGW(TAG, "The firmware has been rolled back to the previous version.");
+                               http_cleanup(client);
+                               task_fatal_error();
+                           }
+                       }
 
-    return err;
+                       if (memcmp(new_app_info.version, running_app_info.version, sizeof(new_app_info.version)) == 0)
+                       {
+                           ESP_LOGW(TAG, "Current running version is the same as a new. We will not continue the update.");
+                           http_cleanup(client);
+                           task_fatal_error();
+                       }
+
+                       imageHeaderWasChecked = true;
+
+                       err = esp_ota_begin(updatePartition, OTA_SIZE_UNKNOWN, &updateHandle);
+                       if (err != ESP_OK)
+                       {
+                           ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
+                           http_cleanup(client);
+                           task_fatal_error();
+                       }
+                       ESP_LOGI(TAG, "esp_ota_begin succeeded");
+                   }
+                   else
+                   {
+                       ESP_LOGE(TAG, "received package is not fit len");
+                       http_cleanup(client);
+                       task_fatal_error();
+                   }
+               }
+               err = esp_ota_write( updateHandle, (const void *)otaWriteData, data_read);
+               if (err != ESP_OK)
+               {
+                   http_cleanup(client);
+                   task_fatal_error();
+               }
+               binaryFileLength += data_read;
+               ESP_LOGD(TAG, "Written image length %d", binaryFileLength);
+           }
+           else if (data_read == 0)
+           {
+               ESP_LOGI(TAG, "Connection closed,all data received");
+               break;
+           }
+       }
+       ESP_LOGI(TAG, "Total Write binary data length : %d", binaryFileLength);
+
+       if (esp_ota_end(updateHandle) != ESP_OK)
+       {
+           ESP_LOGE(TAG, "esp_ota_end failed!");
+           http_cleanup(client);
+           task_fatal_error();
+       }
+
+       err = esp_ota_set_boot_partition(updatePartition);
+       if (err != ESP_OK)
+       {
+           ESP_LOGE(TAG, "esp_ota_set_boot_partition failed (%s)!", esp_err_to_name(err));
+           http_cleanup(client);
+           task_fatal_error();
+       }
+       ESP_LOGI(TAG, "Prepare to restart system!");
+       esp_restart();
+
+       return err;
 }
 
 

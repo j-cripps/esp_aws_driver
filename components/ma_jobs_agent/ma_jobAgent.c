@@ -81,6 +81,8 @@ extern const uint8_t certificate_pem_crt_start[] asm("_binary_certificate_pem_cr
 extern const uint8_t certificate_pem_crt_end[] asm("_binary_certificate_pem_crt_end");
 extern const uint8_t private_pem_key_start[] asm("_binary_private_pem_key_start");
 extern const uint8_t private_pem_key_end[] asm("_binary_private_pem_key_end");
+extern const uint8_t s3_root_cert_start[] asm("_binary_s3_root_cert_pem_start");
+extern const uint8_t s3_root_cert_end[] asm("_binary_s3_root_cert_pem_end");
 
 /**
  * @brief Default MQTT HOST URL is pulled from the aws_iot_config.h
@@ -558,7 +560,7 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 
 			unsubAndDisconnnectAWS();
 			vTaskDelay(1000 / portTICK_PERIOD_MS);
-			httpsOtaUpdate(&tempStringBuf[0], aws_root_ca_pem_start, private_pem_key_start);
+			httpsOtaUpdate(&tempStringBuf[0], s3_root_cert_start, private_pem_key_start);
 		}
 		else if (strcmp(tempStringBuf, "awsMsg") == 0)
 		{
