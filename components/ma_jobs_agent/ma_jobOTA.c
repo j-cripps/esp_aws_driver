@@ -35,6 +35,9 @@
 
 /* -------------------------------------------------------------------------- */
 
+/**
+ * @brief Size of OTA data write buffer in bytes
+ */
 #define BUFFSIZE 1024
 
 /* -------------------------------------------------------------------------- */
@@ -42,7 +45,7 @@
 
 static const char *TAG = "ma_JobOTA";
 
-/*
+/**
  * @brief an ota data write buffer ready to write to the flash
  */
 static char otaWriteData[BUFFSIZE + 1] = { 0 };
@@ -102,7 +105,7 @@ static void http_cleanup(esp_http_client_handle_t client)
 
 /* Function Definitions
  * -------------------------------------------------------------------------- */
-esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart, const uint8_t* clientKeyPemStart)
+esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart)
 {
     esp_err_t err;
 
@@ -195,6 +198,7 @@ esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart, con
                                ESP_LOGW(TAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.", invalid_app_info.version);
                                ESP_LOGW(TAG, "The firmware has been rolled back to the previous version.");
                                http_cleanup(client);
+                               // Notify AWS that job failed
                                task_fatal_error();
                            }
                        }
@@ -203,6 +207,7 @@ esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart, con
                        {
                            ESP_LOGW(TAG, "Current running version is the same as a new. We will not continue the update.");
                            http_cleanup(client);
+                           // Notify AWS that job failed
                            task_fatal_error();
                        }
 
@@ -213,6 +218,7 @@ esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart, con
                        {
                            ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
                            http_cleanup(client);
+                           // Notify AWS that job failed
                            task_fatal_error();
                        }
                        ESP_LOGI(TAG, "esp_ota_begin succeeded");
@@ -221,6 +227,7 @@ esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart, con
                    {
                        ESP_LOGE(TAG, "received package is not fit len");
                        http_cleanup(client);
+                       // Notify AWS that job failed
                        task_fatal_error();
                    }
                }

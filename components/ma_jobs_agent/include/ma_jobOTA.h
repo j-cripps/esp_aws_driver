@@ -14,7 +14,7 @@
 
 /* Function Prototypes
  * -------------------------------------------------------------------------- */
-esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart, const uint8_t* clientKeyPemStart);
+esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart);
 
 
 #endif /* __ma_jobOTA__ */

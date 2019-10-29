@@ -238,21 +238,12 @@ static void initialiseWifi(void)
 
 static bool diagnostic(void)
 {
-    gpio_config_t io_conf;
-    io_conf.intr_type    = GPIO_PIN_INTR_DISABLE;
-    io_conf.mode         = GPIO_MODE_INPUT;
-    io_conf.pin_bit_mask = (1ULL << CONFIG_EXAMPLE_GPIO_DIAGNOSTIC);
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.pull_up_en   = GPIO_PULLUP_ENABLE;
-    gpio_config(&io_conf);
+    /* This needs implementing
+     * - Need to come up with test to check if app is valid
+     * - Current implementation always passes
+     */
 
-    ESP_LOGI(TAG, "Diagnostics (5 sec)...");
-    vTaskDelay(5000 / portTICK_PERIOD_MS);
-
-    bool diagnostic_is_ok = gpio_get_level(CONFIG_EXAMPLE_GPIO_DIAGNOSTIC);
-
-    gpio_reset_pin(CONFIG_EXAMPLE_GPIO_DIAGNOSTIC);
-    return 0;
+    return true;
 }
 
 
@@ -560,7 +551,7 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 
 			unsubAndDisconnnectAWS();
 			vTaskDelay(1000 / portTICK_PERIOD_MS);
-			httpsOtaUpdate(&tempStringBuf[0], s3_root_cert_start, private_pem_key_start);
+			httpsOtaUpdate(&tempStringBuf[0], s3_root_cert_start);
 		}
 		else if (strcmp(tempStringBuf, "awsMsg") == 0)
 		{
