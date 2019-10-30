@@ -47,7 +47,11 @@
 #include "aws_iot_jobs_interface.h"
 
 
+/* -------------------------------------------------------------------------- */
+
+
 #define COUNT_OF(x) ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
+
 
 /* -------------------------------------------------------------------------- */
 
@@ -61,19 +65,24 @@
 
 static const char *TAG = "ma_JobAgent";
 
-static const char *THING_NAME = "ESP32TestThing";
+const char *THING_NAME = "ESP32TestThing";
 
-/* FreeRTOS event group to signal when we are connected & ready to make a request */
-static EventGroupHandle_t wifi_event_group;
-
-/* The event group allows multiple bits for each event,
- * but we only care about one event - are we connected
- * to the AP with an IP?
+/**
+ * @brief Event group to signal when we are connected & ready to make a request
  */
-const int WIFI_CONNECTED_BIT = BIT0;
+EventGroupHandle_t taskEventGroup;
 
-/* CA Root certificate, device ("Thing") certificate and device
- * ("Thing") key.
+const int WIFI_PROVISIONED_BIT = BIT0;  /**< Whether the task has been provided with WiFi credentials */
+const int WIFI_CONNECTED_BIT = BIT1;    /**< Whether WiFi stack is connected */
+const int RESTART_REQUESTED = BIT2;     /**< Whether task requests restart of unit (usually after successful OTA update) */
+const int WORK_COMPLETED = BIT3;        /**< Task completed all work so can be stopped */
+
+
+/**
+ * @brief CA Root certificate
+ *        device ("Thing") certificate
+ *        device ("Thing") key
+ *        s3 root cert for connecting to AWS S3
  */
 extern const uint8_t aws_root_ca_pem_start[] asm("_binary_aws_root_ca_pem_start");
 extern const uint8_t aws_root_ca_pem_end[] asm("_binary_aws_root_ca_pem_end");
@@ -106,12 +115,13 @@ const char *TEST_TOPIC = "test_topic/esp32";
 const uint8_t TEST_TOPIC_LEN = strlen("test_topic/esp32");
 int32_t testVar = 0;
 
-/* AWS Topic Buffers */
+/* AWS Topic and Storage Buffers */
 char getRejectedSubBuf[128];
 char getAcceptedSubBuf[128];
 char getJobAcceptedSubBuf[128];
 char tempJobBuf[128];
 char tempStringBuf[256];
+char currentJobIdBuf[64];
 
 /* Jsmn JSON Parser */
 static jsmn_parser jParser;
@@ -176,7 +186,7 @@ static void taskFatalError(void)
 	while (1)
 	{
 		ESP_LOGE(TAG, "Fatal error in task, no return");
-		vTaskDelay(5000 / portTICK_PERIOD_MS);
+		vTaskDelay(10000 / portTICK_PERIOD_MS);
 	}
 
     (void)vTaskDelete(NULL);
@@ -190,13 +200,13 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
         esp_wifi_connect();
         break;
     case SYSTEM_EVENT_STA_GOT_IP:
-        xEventGroupSetBits(wifi_event_group, WIFI_CONNECTED_BIT);
+        xEventGroupSetBits(taskEventGroup, WIFI_CONNECTED_BIT);
         break;
     case SYSTEM_EVENT_STA_DISCONNECTED:
         /* This is a workaround as ESP32 WiFi libs don't currently
            auto-reassociate. */
         esp_wifi_connect();
-        xEventGroupClearBits(wifi_event_group, WIFI_CONNECTED_BIT);
+        xEventGroupClearBits(taskEventGroup, WIFI_CONNECTED_BIT);
         break;
     default:
         break;
@@ -218,7 +228,7 @@ static bool wifiProvisionedCheck(void)
 static void initialiseWifi(void)
 {
     tcpip_adapter_init();
-    wifi_event_group = xEventGroupCreate();
+    taskEventGroup = xEventGroupCreate();
     ESP_ERROR_CHECK( esp_event_loop_init(event_handler, NULL) );
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK( esp_wifi_init(&cfg) );
@@ -261,6 +271,7 @@ static void bootValidityCheck(void)
 			{
 				ESP_LOGI(TAG, "Diagnostics completed successfully");
 				esp_ota_mark_app_valid_cancel_rollback();
+				// Notify AWS that job completed successfully
 			}
 			else
 			{
@@ -444,13 +455,13 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 				ESP_LOGI(TAG, "Size: %d, Job: %s", jobToken->size, tempStringBuf);
 
 				jsmntok_t *jobIdToken = findToken("jobId", params->payload, jobToken);
-				ret = extractJsonTokenAsString(jobIdToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+				ret = extractJsonTokenAsString(jobIdToken, (char *)params->payload, &currentJobIdBuf[0], COUNT_OF(currentJobIdBuf));
 				if (!ret)
 				{
 					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
 					taskFatalError();
 				}
-				ESP_LOGI(TAG, "Job Id: %s", tempStringBuf);
+				ESP_LOGI(TAG, "Job Id: %s", currentJobIdBuf);
 
 				/* Trigger job execution by asking AWS for job document.
 				 * - Job execution takes place in awsJobGetAcceptedCallback */
@@ -458,13 +469,25 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 				describeRequest.executionNumber = 0;
 				describeRequest.includeJobDocument = true;
 				describeRequest.clientToken = NULL;
-				IoT_Error_t rc = aws_iot_jobs_describe(pClient, QOS0, THING_NAME, tempStringBuf, &describeRequest,
+				IoT_Error_t rc = aws_iot_jobs_describe(pClient, QOS0, THING_NAME, currentJobIdBuf, &describeRequest,
 													   tempJobBuf, COUNT_OF(tempJobBuf), NULL, 0);
 				if (SUCCESS != rc)
 				{
 					ESP_LOGE(TAG, "Unable to publish job description request: %d", rc);
 					taskFatalError();
 				}
+
+//				/* Publish job in progress update to AWS signifying request for job document */
+//				AwsIotJobExecutionUpdateRequest updateRequest;
+//				updateRequest.clientToken = NULL;
+//				updateRequest.status = JOB_EXECUTION_IN_PROGRESS;
+//				rc = aws_iot_jobs_send_update(pClient, QOS0, THING_NAME, currentJobIdBuf, &updateRequest,
+//				                              tempJobBuf, COUNT_OF(tempJobBuf), NULL, 0);
+//				if (SUCCESS != rc)
+//                {
+//                    ESP_LOGE(TAG, "Unable to publish job update request: %d", rc);
+//                    taskFatalError();
+//                }
 			}
 		}
 		else
@@ -549,9 +572,21 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 			}
 			ESP_LOGI(TAG, "url: %s", tempStringBuf);
 
-			unsubAndDisconnnectAWS();
+			//aws_iot_jobs_send_update(&client, QOS0, THING_NAME, jobId, updateRequest, topicBuffer, topicBufferSize, messageBuffer, messageBufferSize)
+
+			//unsubAndDisconnnectAWS();
 			vTaskDelay(1000 / portTICK_PERIOD_MS);
-			httpsOtaUpdate(&tempStringBuf[0], s3_root_cert_start);
+			ma_ota_err_t otaErr = httpsOtaUpdate(&tempStringBuf[0], s3_root_cert_start);
+			if (otaErr != MA_OTA_SUCCESS)
+			{
+			    ESP_LOGE(TAG, "HTTPS OTA update failed: %d", otaErr);
+			    taskFatalError();
+			}
+			else
+			{
+			    ESP_LOGI(TAG, "HTTPS OTA update successful, restarting...");
+			    esp_restart();
+			}
 		}
 		else if (strcmp(tempStringBuf, "awsMsg") == 0)
 		{
@@ -693,11 +728,16 @@ static void unsubAndDisconnnectAWS(void)
 {
     IoT_Error_t rc = FAILURE;
 
+    rc = aws_iot_mqtt_yield(&client, 100);
+
     /* Unsubscribe from all AWS services */
     rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getRejectedSubBuf);
     rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getAcceptedSubBuf);
     rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getJobAcceptedSubBuf);
-    if (SUCCESS != rc)
+
+    rc = aws_iot_mqtt_yield(&client, 100);
+
+    if (rc != SUCCESS)
     {
         ESP_LOGE(TAG, "Unable to unsubscribe from AWS Jobs service: %d", rc);
         taskFatalError();
@@ -709,7 +749,7 @@ static void unsubAndDisconnnectAWS(void)
 
     /* Disconnect from AWS */
     rc = aws_iot_mqtt_disconnect(&client);
-    if (SUCCESS != rc)
+    if (rc != SUCCESS)
     {
         ESP_LOGE(TAG, "Unable to disconnect from AWS: %d", rc);
         taskFatalError();
@@ -744,7 +784,7 @@ void job_agent_task(void *param)
 		}
 
 		/* Check if WiFi connected */
-		EventBits_t ret_bit = xEventGroupWaitBits(wifi_event_group, WIFI_CONNECTED_BIT, false, true, 50 / portTICK_PERIOD_MS);
+		EventBits_t ret_bit = xEventGroupWaitBits(taskEventGroup, WIFI_CONNECTED_BIT, false, true, 50 / portTICK_PERIOD_MS);
 		if ((ret_bit & WIFI_CONNECTED_BIT) != 0)
 		{
 			ESP_LOGI(TAG, "WiFi connected");

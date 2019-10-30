@@ -3,6 +3,6 @@
 cmake_minimum_required(VERSION 3.5)
 
 set(PROJECT_VER "0.0.0.1")
-
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(example_driver)
+
+project(example_driver-0_0_0_1)

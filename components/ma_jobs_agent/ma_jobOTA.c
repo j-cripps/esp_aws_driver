@@ -135,7 +135,7 @@ esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart)
     if (client == NULL)
     {
         ESP_LOGE(TAG, "Failed to initialise HTTP connection");
-        task_fatal_error();
+        return MA_OTA_HTTP_ERROR;
     }
 
     err = esp_http_client_open(client, 0);
@@ -143,7 +143,7 @@ esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart)
     {
         ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
-        task_fatal_error();
+        return MA_OTA_HTTP_ERROR;
     }
 
     esp_http_client_fetch_headers(client);
@@ -158,114 +158,112 @@ esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart)
     bool imageHeaderWasChecked = false;
     while (1)
     {
-           int data_read = esp_http_client_read(client, otaWriteData, BUFFSIZE);
-           if (data_read < 0)
-           {
-               ESP_LOGE(TAG, "Error: SSL data read error");
-               http_cleanup(client);
-               task_fatal_error();
-           }
-           else if (data_read > 0)
-           {
-               if (imageHeaderWasChecked == false)
-               {
-                   esp_app_desc_t new_app_info;
-                   if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t))
-                   {
-                       // check current version with downloading
-                       memcpy(&new_app_info, &otaWriteData[sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t)], sizeof(esp_app_desc_t));
-                       ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
+        int data_read = esp_http_client_read(client, otaWriteData, BUFFSIZE);
 
-                       esp_app_desc_t running_app_info;
-                       if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK)
-                       {
-                           ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
-                       }
+        if (data_read < 0)
+        {
+            ESP_LOGE(TAG, "Error: SSL data read error");
+            http_cleanup(client);
+            return MA_OTA_HTTP_ERROR;
+        }
+        else if (data_read > 0)
+        {
+            if (imageHeaderWasChecked == false)
+            {
+                esp_app_desc_t new_app_info;
+                if (data_read > sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t) + sizeof(esp_app_desc_t))
+                {
+                    /* check current version with downloading version */
+                    memcpy(&new_app_info, &otaWriteData[sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t)],
+                          sizeof(esp_app_desc_t));
+                    ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
 
-                       const esp_partition_t* last_invalid_app = esp_ota_get_last_invalid_partition();
-                       esp_app_desc_t invalid_app_info;
-                       if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK)
-                       {
-                           ESP_LOGI(TAG, "Last invalid firmware version: %s", invalid_app_info.version);
-                       }
+                    esp_app_desc_t running_app_info;
+                    if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK)
+                    {
+                        ESP_LOGI(TAG, "Running firmware version: %s", running_app_info.version);
+                    }
 
-                       // check current version with last invalid partition
-                       if (last_invalid_app != NULL)
-                       {
-                           if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0)
-                           {
-                               ESP_LOGW(TAG, "New version is the same as invalid version.");
-                               ESP_LOGW(TAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.", invalid_app_info.version);
-                               ESP_LOGW(TAG, "The firmware has been rolled back to the previous version.");
-                               http_cleanup(client);
-                               // Notify AWS that job failed
-                               task_fatal_error();
-                           }
-                       }
+                    const esp_partition_t* last_invalid_app = esp_ota_get_last_invalid_partition();
+                    esp_app_desc_t invalid_app_info;
+                    if (esp_ota_get_partition_description(last_invalid_app, &invalid_app_info) == ESP_OK)
+                    {
+                        ESP_LOGI(TAG, "Last invalid firmware version: %s", invalid_app_info.version);
+                    }
 
-                       if (memcmp(new_app_info.version, running_app_info.version, sizeof(new_app_info.version)) == 0)
-                       {
-                           ESP_LOGW(TAG, "Current running version is the same as a new. We will not continue the update.");
-                           http_cleanup(client);
-                           // Notify AWS that job failed
-                           task_fatal_error();
-                       }
+                    /* check current version with last invalid partition */
+                    if (last_invalid_app != NULL)
+                    {
+                        if (memcmp(invalid_app_info.version, new_app_info.version, sizeof(new_app_info.version)) == 0)
+                        {
+                            ESP_LOGW(TAG, "New version is the same as invalid version.");
+                            ESP_LOGW(TAG, "Previously, there was an attempt to launch the firmware with %s version, but it failed.",
+                                    invalid_app_info.version);
+                            ESP_LOGW(TAG, "The firmware has been rolled back to the previous version.");
+                            http_cleanup(client);
+                            return MA_OTA_INV_FW;
+                        }
+                    }
 
-                       imageHeaderWasChecked = true;
+                    if (memcmp(new_app_info.version, running_app_info.version, sizeof(new_app_info.version)) == 0)
+                    {
+                        ESP_LOGW(TAG, "Current running version is the same as a new. We will not continue the update.");
+                        http_cleanup(client);
+                        return MA_OTA_DUP_FW;
+                    }
 
-                       err = esp_ota_begin(updatePartition, OTA_SIZE_UNKNOWN, &updateHandle);
-                       if (err != ESP_OK)
-                       {
-                           ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
-                           http_cleanup(client);
-                           // Notify AWS that job failed
-                           task_fatal_error();
-                       }
-                       ESP_LOGI(TAG, "esp_ota_begin succeeded");
-                   }
-                   else
-                   {
-                       ESP_LOGE(TAG, "received package is not fit len");
-                       http_cleanup(client);
-                       // Notify AWS that job failed
-                       task_fatal_error();
-                   }
-               }
-               err = esp_ota_write( updateHandle, (const void *)otaWriteData, data_read);
-               if (err != ESP_OK)
-               {
-                   http_cleanup(client);
-                   task_fatal_error();
-               }
-               binaryFileLength += data_read;
-               ESP_LOGD(TAG, "Written image length %d", binaryFileLength);
-           }
-           else if (data_read == 0)
-           {
-               ESP_LOGI(TAG, "Connection closed,all data received");
-               break;
-           }
-       }
-       ESP_LOGI(TAG, "Total Write binary data length : %d", binaryFileLength);
+                    imageHeaderWasChecked = true;
 
-       if (esp_ota_end(updateHandle) != ESP_OK)
-       {
-           ESP_LOGE(TAG, "esp_ota_end failed!");
-           http_cleanup(client);
-           task_fatal_error();
-       }
+                    err = esp_ota_begin(updatePartition, OTA_SIZE_UNKNOWN, &updateHandle);
+                    if (err != ESP_OK)
+                    {
+                        ESP_LOGE(TAG, "esp_ota_begin failed (%s)", esp_err_to_name(err));
+                        http_cleanup(client);
+                        return MA_OTA_ERR;
+                    }
+                    ESP_LOGI(TAG, "esp_ota_begin succeeded");
+                }
+                else
+                {
+                    ESP_LOGE(TAG, "received package is not fit len");
+                    http_cleanup(client);
+                    return MA_OTA_ERR;
+                }
+            }
 
-       err = esp_ota_set_boot_partition(updatePartition);
-       if (err != ESP_OK)
-       {
-           ESP_LOGE(TAG, "esp_ota_set_boot_partition failed (%s)!", esp_err_to_name(err));
-           http_cleanup(client);
-           task_fatal_error();
-       }
-       ESP_LOGI(TAG, "Prepare to restart system!");
-       esp_restart();
+            err = esp_ota_write( updateHandle, (const void *)otaWriteData, data_read);
+            if (err != ESP_OK)
+            {
+                http_cleanup(client);
+                return MA_OTA_ERR;
+            }
+            binaryFileLength += data_read;
+            ESP_LOGD(TAG, "Written image length %d", binaryFileLength);
+        }
+        else if (data_read == 0)
+        {
+            ESP_LOGI(TAG, "Connection closed,all data received");
+            break;
+        }
+    }
+    ESP_LOGI(TAG, "Total Write binary data length : %d", binaryFileLength);
 
-       return err;
+    if (esp_ota_end(updateHandle) != ESP_OK)
+    {
+        ESP_LOGE(TAG, "esp_ota_end failed!");
+        http_cleanup(client);
+        return MA_OTA_ERR;
+    }
+
+    err = esp_ota_set_boot_partition(updatePartition);
+    if (err != ESP_OK)
+    {
+        ESP_LOGE(TAG, "esp_ota_set_boot_partition failed (%s)!", esp_err_to_name(err));
+        http_cleanup(client);
+        return MA_OTA_ERR;
+    }
+
+    return MA_OTA_SUCCESS;
 }
 
 
