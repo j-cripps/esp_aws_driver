@@ -133,6 +133,8 @@ static char getRejectedSubBuf[128];
 static char getAcceptedSubBuf[128];
 static char getJobAcceptedSubBuf[128];
 static char getJobUpdateSubBuf[128];
+static char getJobUpdateAcceptedSubBuf[128];
+static char getJobUpdateRejectedSubBuf[128];
 static char tempJobBuf[128];
 static char tempStringBuf[256];
 //static char currentJobIdBuf[64];
@@ -157,17 +159,21 @@ static void bootValidityCheck(void);
 static esp_err_t nvsBootCheck(void);
 static void otaBootCheck(void);
 
-void disconnectCallbackHandler(AWS_IoT_Client *pClient, void *data);
+static void disconnectCallbackHandler(AWS_IoT_Client *pClient, void *data);
 
-void awsGetRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
-                                   IoT_Publish_Message_Params *params, void *pData);
-void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
-                                   IoT_Publish_Message_Params *params, void *pData);
-void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
-                                      IoT_Publish_Message_Params *params, void *pData);
-void awsGetJobUpdateCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
-                                    IoT_Publish_Message_Params *params, void *pData);
-void awsProcessJob(void);
+static void awsGetRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                          IoT_Publish_Message_Params *params, void *pData);
+static void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                          IoT_Publish_Message_Params *params, void *pData);
+static void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                             IoT_Publish_Message_Params *params, void *pData);
+static void awsGetJobUpdateCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                           IoT_Publish_Message_Params *params, void *pData);
+static void awsUpdateAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                             IoT_Publish_Message_Params *params, void *pData);
+static void awsUpdateRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                             IoT_Publish_Message_Params *params, void *pData);
+static void awsProcessJob(void);
 
 static void connectToAWS(void);
 
@@ -640,6 +646,25 @@ void awsProcessJob(void)
 }
 
 
+static void awsUpdateAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                    IoT_Publish_Message_Params *params, void *pData)
+{
+    ESP_LOGI(TAG, "\nJOB_UPDATE_TOPIC / accepted callback");
+    ESP_LOGI(TAG, "topic: %.*s", topicNameLen, topicName);
+    ESP_LOGI(TAG, "payload: %.*s", (int) params->payloadLen, (char *)params->payload);
+}
+
+static void awsUpdateRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
+                                    IoT_Publish_Message_Params *params, void *pData)
+{
+    ESP_LOGI(TAG, "\nJOB_UPDATE_TOPIC / rejected callback");
+    ESP_LOGI(TAG, "topic: %.*s", topicNameLen, topicName);
+    ESP_LOGI(TAG, "payload: %.*s", (int) params->payloadLen, (char *)params->payload);
+
+    /* Do error handling here for when the update was rejected */
+}
+
+
 static void connectToAWS(void)
 {
 	IoT_Error_t rc = FAILURE;
@@ -707,21 +732,46 @@ static void connectToAWS(void)
     paramsQOS0.isRetained = 0;
 
     /* Create and subscribe to job topics */
-    snprintf(getRejectedSubBuf, COUNT_OF(getRejectedSubBuf), "$aws/things/%s/jobs/get/rejected", THING_NAME);
-    rc = aws_iot_mqtt_subscribe(&client, getRejectedSubBuf, COUNT_OF(getRejectedSubBuf), QOS0,
-    							awsGetRejectedCallbackHandler, NULL);
+    rc = aws_iot_jobs_subscribe_to_job_messages(&client, QOS0, THING_NAME, NULL, JOB_GET_PENDING_TOPIC, JOB_REJECTED_REPLY_TYPE,
+                                                awsGetRejectedCallbackHandler, NULL, getRejectedSubBuf, COUNT_OF(getRejectedSubBuf));
+    if (SUCCESS != rc)
+    {
+        ESP_LOGE(TAG, "Unable to subscribe JOB_GET_REJECTED: %d", rc);
+        taskFatalError();
+    }
 
-    snprintf(getAcceptedSubBuf, COUNT_OF(getAcceptedSubBuf), "$aws/things/%s/jobs/get/accepted", THING_NAME);
-    rc = aws_iot_mqtt_subscribe(&client, getAcceptedSubBuf, COUNT_OF(getAcceptedSubBuf), QOS0,
-    							awsGetAcceptedCallbackHandler, NULL);
+    rc = aws_iot_jobs_subscribe_to_job_messages(&client, QOS0, THING_NAME, NULL, JOB_GET_PENDING_TOPIC, JOB_ACCEPTED_REPLY_TYPE,
+                                                awsGetAcceptedCallbackHandler, NULL, getAcceptedSubBuf, COUNT_OF(getAcceptedSubBuf));
+    if (SUCCESS != rc)
+    {
+        ESP_LOGE(TAG, "Unable to subscribe to JOB_GET_ACCEPTED: %d", rc);
+        taskFatalError();
+    }
 
-    snprintf(getJobAcceptedSubBuf, COUNT_OF(getJobAcceptedSubBuf), "$aws/things/%s/jobs/+/get/accepted", THING_NAME);
-    rc = aws_iot_mqtt_subscribe(&client, getJobAcceptedSubBuf, COUNT_OF(getJobAcceptedSubBuf), QOS0,
+    int num = snprintf(getJobAcceptedSubBuf, COUNT_OF(getJobAcceptedSubBuf), "$aws/things/%s/jobs/+/get/accepted", THING_NAME);
+    getJobAcceptedSubBuf[num] = '\0';
+    rc = aws_iot_mqtt_subscribe(&client, getJobAcceptedSubBuf, num, QOS0,
         						awsJobGetAcceptedCallbackHandler, NULL);
+    ESP_LOGW(TAG, "%s", getJobAcceptedSubBuf);
+    if (SUCCESS != rc)
+    {
+        ESP_LOGE(TAG, "Unable to subscribe to JOBS_DESCRIBE_TOPIC: %d", rc);
+        taskFatalError();
+    }
 
+    rc = aws_iot_jobs_subscribe_to_job_messages(&client, QOS0, THING_NAME, JOB_ID_WILDCARD, JOB_UPDATE_TOPIC, JOB_ACCEPTED_REPLY_TYPE,
+                                                awsUpdateAcceptedCallbackHandler, NULL, getJobUpdateAcceptedSubBuf, COUNT_OF(getJobUpdateAcceptedSubBuf));
+    if (SUCCESS != rc)
+    {
+        ESP_LOGE(TAG, "Unable to subscribe to JOB_UPDATE_ACCEPTED: %d", rc);
+        taskFatalError();
+    }
+
+    rc = aws_iot_jobs_subscribe_to_job_messages(&client, QOS0, THING_NAME, JOB_ID_WILDCARD, JOB_UPDATE_TOPIC, JOB_REJECTED_REPLY_TYPE,
+                                                awsUpdateRejectedCallbackHandler, NULL, getJobUpdateRejectedSubBuf, COUNT_OF(getJobUpdateRejectedSubBuf));
     if (SUCCESS != rc)
 	{
-		ESP_LOGE(TAG, "Unable to subscribe to AWS Jobs service: %d", rc);
+		ESP_LOGE(TAG, "Unable to subscribe to JOB_UPDATE_REJECTED: %d", rc);
 		taskFatalError();
 	}
 
@@ -730,8 +780,11 @@ static void connectToAWS(void)
     {
     	ESP_LOGI(TAG, "In AWS processing loop\n\n");
 
-        // Yield pauses the current thread, allowing MQTT send/receive to occur
-        rc = aws_iot_mqtt_yield(&client, 100);
+        /* Yield pauses the current thread, allowing MQTT send/receive to occur.
+         *      - Essentially use this as a delay, all time spent not working in this
+         *        loop should be spent in yield
+         */
+        rc = aws_iot_mqtt_yield(&client, 5000);
 
         if(NETWORK_ATTEMPTING_RECONNECT == rc)
         {
@@ -763,21 +816,25 @@ static void connectToAWS(void)
             ESP_LOGI(TAG, "JOB_READY_BIT processing");
 
             /* Create and subscribe to job topics */
-            snprintf(getJobUpdateSubBuf, COUNT_OF(getJobUpdateSubBuf), "$aws/things/%s/jobs/%s/update/#", THING_NAME, currentJob.jobId);
-            rc = aws_iot_mqtt_subscribe(&client, getJobUpdateSubBuf, COUNT_OF(getJobUpdateSubBuf), QOS0,
-                                        awsGetJobUpdateCallbackHandler, NULL);
-            if (rc != SUCCESS)
-            {
-                ESP_LOGE(TAG, "AWS Job Update sub failed: %d", rc);
-                taskFatalError();
-            }
+//            int num = snprintf(getJobUpdateSubBuf, COUNT_OF(getJobUpdateSubBuf), "$aws/things/%s/jobs/%s/update/#", THING_NAME, currentJob.jobId);
+//            rc = aws_iot_mqtt_subscribe(&client, getJobUpdateSubBuf, COUNT_OF(getJobUpdateSubBuf), QOS0,
+//                                        awsGetJobUpdateCallbackHandler, NULL);
+//            if (rc != SUCCESS)
+//            {
+//                ESP_LOGE(TAG, "AWS Job Update sub failed: %d", rc);
+//                taskFatalError();
+//            }
 
             AwsIotJobExecutionUpdateRequest updateRequest;
             updateRequest.clientToken = NULL;
             updateRequest.includeJobDocument = false;
             updateRequest.includeJobExecutionState = false;
+            updateRequest.statusDetails = NULL;
+            updateRequest.executionNumber = NULL;
+            updateRequest.expectedVersion = 1;
             updateRequest.status = JOB_EXECUTION_IN_PROGRESS;
             rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
+            ESP_LOGW(TAG, "%s", tempStringBuf);
             if (rc != SUCCESS)
             {
                 ESP_LOGE(TAG, "AWS Job Update notification failed: %d", rc);
@@ -796,6 +853,9 @@ static void connectToAWS(void)
             updateRequest.clientToken = NULL;
             updateRequest.includeJobDocument = false;
             updateRequest.includeJobExecutionState = false;
+            updateRequest.statusDetails = NULL;
+            updateRequest.executionNumber = NULL;
+            updateRequest.expectedVersion = 2;
             updateRequest.status = JOB_EXECUTION_SUCCEEDED;
             rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
             if (rc != SUCCESS)
@@ -817,6 +877,9 @@ static void connectToAWS(void)
             updateRequest.clientToken = NULL;
             updateRequest.includeJobDocument = false;
             updateRequest.includeJobExecutionState = false;
+            updateRequest.statusDetails = NULL;
+            updateRequest.executionNumber = NULL;
+            updateRequest.expectedVersion = 2;
             updateRequest.status = JOB_EXECUTION_FAILED;
             rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
             if (rc != SUCCESS)
@@ -830,7 +893,7 @@ static void connectToAWS(void)
         }
 
         ESP_LOGI(TAG, "Stack remaining for task '%s' is %d bytes", pcTaskGetTaskName(NULL), uxTaskGetStackHighWaterMark(NULL));
-        vTaskDelay(5000 / portTICK_PERIOD_MS);
+        //vTaskDelay(5000 / portTICK_PERIOD_MS);
     }
 
     unsubAndDisconnnectAWS();
@@ -847,6 +910,8 @@ static void unsubAndDisconnnectAWS(void)
     rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getRejectedSubBuf);
     rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getAcceptedSubBuf);
     rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getJobAcceptedSubBuf);
+    rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getJobUpdateAcceptedSubBuf);
+    rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getJobUpdateRejectedSubBuf);
 
     rc = aws_iot_mqtt_yield(&client, 100);
 
