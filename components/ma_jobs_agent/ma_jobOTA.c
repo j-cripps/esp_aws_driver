@@ -3,7 +3,7 @@
  *
  * @brief Contains functions relating to the OTA (over-the-air) update feature
  *
- * @note Based on the 'advanced_https_ota_example' in ESP-IDF
+ * @note Based on the 'advanced_https_ota_example' in ESP-IDF release/v4.0
  *
  * @author Jack Cripps // jackc@monitoraudio.com
  * @date 25/10/2019

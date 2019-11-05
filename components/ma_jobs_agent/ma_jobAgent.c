@@ -65,7 +65,7 @@
 typedef struct jobStruct {
     char jobId[32];
     char jobDoc[256];
-    char jobFailMsg[256];
+    char jobFailMsg[128];
 } jobDefinition_t;
 
 /* -------------------------------------------------------------------------- */
@@ -85,7 +85,7 @@ const int WIFI_CONNECTED_BIT = BIT1;        /**< Whether WiFi stack is connected
 const int RESTART_REQUESTED_BIT = BIT2;     /**< Whether task requests restart of unit (usually after successful OTA update) */
 const int WORK_COMPLETED_BIT = BIT3;        /**< Task completed all work so can be stopped */
 const int JOB_READY_BIT = BIT4;             /**< Whether job ready to be processed */
-const int JOB_IN_PROGRESS_BIT = BIT5;       /**< Whether an AWS job is currently being processed */
+const int JOB_PROCESSING_BIT = BIT5;       /**< Whether an AWS job is currently being processed */
 const int JOB_COMPLETED_BIT = BIT6;         /**< AWS job stage completed flag */
 const int JOB_FAILED_BIT = BIT7;            /**< Generic job failed flag */
 const int UPDATE_FAILED_BIT = BIT8;         /**< Software update failed flag */
@@ -269,6 +269,7 @@ static void initialiseWifi(void)
 
 static bool diagnostic(void)
 {
+    ESP_LOGI(TAG, "Running FW image validation");
     /* This needs implementing
      * - Need to come up with test to check if app is valid
      * - Current implementation always passes
@@ -424,7 +425,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 			}
 			else
 			{
-			    xEventGroupSetBits(taskEventGroup, JOB_IN_PROGRESS_BIT);
+			    xEventGroupSetBits(taskEventGroup, JOB_PROCESSING_BIT);
 
 				ret = extractJsonTokenAsString(inProgressToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
 				if (!ret)
@@ -458,7 +459,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 				}
 				ESP_LOGI(TAG, "Size: %d, Queued jobs: %s", queuedToken->size, tempStringBuf);
 
-				xEventGroupSetBits(taskEventGroup, JOB_IN_PROGRESS_BIT);
+				xEventGroupSetBits(taskEventGroup, JOB_PROCESSING_BIT);
 
 				/* Currently work through buffer from first job object */
 
@@ -578,7 +579,7 @@ void awsProcessJob(void)
 {
     bool ret = false;
 
-    xEventGroupSetBits(taskEventGroup, JOB_IN_PROGRESS_BIT);
+    xEventGroupSetBits(taskEventGroup, JOB_PROCESSING_BIT);
 
     jsmn_init(&jParser);
     int r = jsmn_parse(&jParser, currentJob.jobDoc, COUNT_OF(currentJob.jobDoc), jTokens, COUNT_OF(jTokens));
@@ -622,22 +623,50 @@ void awsProcessJob(void)
         if (otaErr != MA_OTA_SUCCESS)
         {
             ESP_LOGE(TAG, "HTTPS OTA update failed: %d", otaErr);
-            taskFatalError();
             xEventGroupSetBits(taskEventGroup, JOB_FAILED_BIT);
+
+            switch (otaErr)
+            {
+                case MA_OTA_DUP_FW :
+                {
+                    snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Tried to install FW with same version as previous");
+                    break;
+                }
+                case MA_OTA_INV_FW :
+                {
+                    snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Installed FW marked as invalid, running previous version");
+                    break;
+                }
+                case MA_OTA_HTTP_ERROR :
+                {
+                    snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Error downloading OTA update");
+                    break;
+                }
+                case MA_OTA_ERR :
+                {
+                    snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Generic OTA error occurred");
+                    break;
+                }
+                default :
+                {
+                    snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "OTA error not registered");
+                }
+            }
         }
         else
         {
             ESP_LOGI(TAG, "HTTPS OTA update successful, request restart");
-            xEventGroupSetBits(taskEventGroup, RESTART_REQUESTED_BIT | JOB_COMPLETED_BIT);
+            xEventGroupSetBits(taskEventGroup, RESTART_REQUESTED_BIT);
         }
     }
     else if (strcmp(tempStringBuf, "awsMsg") == 0)
     {
 
     }
-    else if (strcmp(tempStringBuf, "reboot") == 0)
+    else if (strcmp(tempStringBuf, "restart") == 0)
     {
-
+        ESP_LOGI(TAG, "Requesting restart");
+        xEventGroupSetBits(taskEventGroup, RESTART_REQUESTED_BIT);
     }
     else
     {
@@ -749,10 +778,8 @@ static void connectToAWS(void)
     }
 
     int num = snprintf(getJobAcceptedSubBuf, COUNT_OF(getJobAcceptedSubBuf), "$aws/things/%s/jobs/+/get/accepted", THING_NAME);
-    getJobAcceptedSubBuf[num] = '\0';
     rc = aws_iot_mqtt_subscribe(&client, getJobAcceptedSubBuf, num, QOS0,
         						awsJobGetAcceptedCallbackHandler, NULL);
-    ESP_LOGW(TAG, "%s", getJobAcceptedSubBuf);
     if (SUCCESS != rc)
     {
         ESP_LOGE(TAG, "Unable to subscribe to JOBS_DESCRIBE_TOPIC: %d", rc);
@@ -803,7 +830,7 @@ static void connectToAWS(void)
         }
 
         /* Only query for more jobs if not currently processing a job */
-        if ((xEventGroupGetBits(taskEventGroup) & JOB_IN_PROGRESS_BIT) == 0)
+        if ((xEventGroupGetBits(taskEventGroup) & JOB_PROCESSING_BIT) == 0)
         {
             ESP_LOGI(TAG, "AWS_QUERY processing");
             rc = aws_iot_jobs_send_query(&client, QOS0, THING_NAME, NULL, NULL, tempJobBuf, COUNT_OF(tempJobBuf),
@@ -815,23 +842,13 @@ static void connectToAWS(void)
         {
             ESP_LOGI(TAG, "JOB_READY_BIT processing");
 
-            /* Create and subscribe to job topics */
-//            int num = snprintf(getJobUpdateSubBuf, COUNT_OF(getJobUpdateSubBuf), "$aws/things/%s/jobs/%s/update/#", THING_NAME, currentJob.jobId);
-//            rc = aws_iot_mqtt_subscribe(&client, getJobUpdateSubBuf, COUNT_OF(getJobUpdateSubBuf), QOS0,
-//                                        awsGetJobUpdateCallbackHandler, NULL);
-//            if (rc != SUCCESS)
-//            {
-//                ESP_LOGE(TAG, "AWS Job Update sub failed: %d", rc);
-//                taskFatalError();
-//            }
-
             AwsIotJobExecutionUpdateRequest updateRequest;
             updateRequest.clientToken = NULL;
             updateRequest.includeJobDocument = false;
             updateRequest.includeJobExecutionState = false;
             updateRequest.statusDetails = NULL;
             updateRequest.executionNumber = NULL;
-            updateRequest.expectedVersion = 1;
+            updateRequest.expectedVersion = 0;
             updateRequest.status = JOB_EXECUTION_IN_PROGRESS;
             rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
             ESP_LOGW(TAG, "%s", tempStringBuf);
@@ -840,6 +857,8 @@ static void connectToAWS(void)
                 ESP_LOGE(TAG, "AWS Job Update notification failed: %d", rc);
                 taskFatalError();
             }
+
+            /* Try and execute the job */
             awsProcessJob();
         }
 
@@ -855,7 +874,7 @@ static void connectToAWS(void)
             updateRequest.includeJobExecutionState = false;
             updateRequest.statusDetails = NULL;
             updateRequest.executionNumber = NULL;
-            updateRequest.expectedVersion = 2;
+            updateRequest.expectedVersion = 0;
             updateRequest.status = JOB_EXECUTION_SUCCEEDED;
             rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
             if (rc != SUCCESS)
@@ -865,7 +884,7 @@ static void connectToAWS(void)
             }
 
             /* Reset all in job in completion flags to continue processing jobs */
-            xEventGroupClearBits(taskEventGroup, JOB_IN_PROGRESS_BIT | JOB_COMPLETED_BIT | JOB_READY_BIT);
+            xEventGroupClearBits(taskEventGroup, JOB_PROCESSING_BIT | JOB_COMPLETED_BIT | JOB_READY_BIT);
         }
 
         /* Notify AWS if current job failed */
@@ -877,9 +896,9 @@ static void connectToAWS(void)
             updateRequest.clientToken = NULL;
             updateRequest.includeJobDocument = false;
             updateRequest.includeJobExecutionState = false;
-            updateRequest.statusDetails = NULL;
+            updateRequest.statusDetails = currentJob.jobFailMsg;
             updateRequest.executionNumber = NULL;
-            updateRequest.expectedVersion = 2;
+            updateRequest.expectedVersion = 0;
             updateRequest.status = JOB_EXECUTION_FAILED;
             rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
             if (rc != SUCCESS)
@@ -889,7 +908,7 @@ static void connectToAWS(void)
             }
 
             /* Reset all in job in completion flags to continue processing jobs */
-            xEventGroupClearBits(taskEventGroup, JOB_IN_PROGRESS_BIT | JOB_COMPLETED_BIT | JOB_READY_BIT);
+            xEventGroupClearBits(taskEventGroup, JOB_PROCESSING_BIT | JOB_COMPLETED_BIT | JOB_READY_BIT);
         }
 
         ESP_LOGI(TAG, "Stack remaining for task '%s' is %d bytes", pcTaskGetTaskName(NULL), uxTaskGetStackHighWaterMark(NULL));
@@ -913,7 +932,7 @@ static void unsubAndDisconnnectAWS(void)
     rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getJobUpdateAcceptedSubBuf);
     rc = aws_iot_jobs_unsubscribe_from_job_messages(&client, getJobUpdateRejectedSubBuf);
 
-    rc = aws_iot_mqtt_yield(&client, 100);
+    rc = aws_iot_mqtt_yield(&client, 500);
 
     if (rc != SUCCESS)
     {
