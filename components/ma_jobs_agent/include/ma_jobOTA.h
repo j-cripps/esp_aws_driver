@@ -15,17 +15,18 @@
 /* Enums and Structs
  * -------------------------------------------------------------------------- */
 typedef enum otaReturn {
-    MA_OTA_ERR = -4,
+    MA_OTA_HTTP_ERR = -5,
+    MA_OTA_JOB_ERR = -4,
     MA_OTA_DUP_FW = -3,
     MA_OTA_INV_FW = -2,
-    MA_OTA_HTTP_ERROR = -1,
+    MA_OTA_ERR = -1,
     MA_OTA_SUCCESS = 0
 } ma_ota_err_t;
 
 
 /* Function Prototypes
  * -------------------------------------------------------------------------- */
-ma_ota_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart);
+ma_ota_err_t httpsOtaUpdate(const char* appVersion, const char* url, const uint8_t* serverCertPemStart);
 
 
 #endif /* __ma_jobOTA__ */

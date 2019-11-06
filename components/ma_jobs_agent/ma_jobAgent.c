@@ -65,7 +65,8 @@
 typedef struct jobStruct {
     char jobId[32];
     char jobDoc[256];
-    char jobFailMsg[128];
+    char jobFailMsg[256];
+    bool inProgress;
 } jobDefinition_t;
 
 /* -------------------------------------------------------------------------- */
@@ -136,7 +137,7 @@ static char getJobUpdateSubBuf[128];
 static char getJobUpdateAcceptedSubBuf[128];
 static char getJobUpdateRejectedSubBuf[128];
 static char tempJobBuf[128];
-static char tempStringBuf[256];
+static char tempStringBuf[512];
 //static char currentJobIdBuf[64];
 
 /* Job storage */
@@ -184,6 +185,12 @@ static void unsubAndDisconnnectAWS(void);
 
 static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source, char *dest, uint16_t destLen)
 {
+    /* Don't copy if token is null (i.e token could not be found in json document */
+    if (pToken == NULL)
+    {
+        return false;
+    }
+
 	uint16_t sourceLen = pToken->end - pToken->start;
 
 	/* Don't copy if no room in dest buffer for whole string + null terminator */
@@ -430,10 +437,50 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 				ret = extractJsonTokenAsString(inProgressToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
 				if (!ret)
 				{
-					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
 					taskFatalError();
 				}
 				ESP_LOGI(TAG, "Size: %d, In progress jobs: %s", inProgressToken->size, tempStringBuf);
+
+				currentJob.inProgress = true;
+
+				jsmntok_t *jobToken = inProgressToken;
+
+				while (jobToken->type != JSMN_OBJECT)
+                {
+                    jobToken++;
+                }
+				/* Job found */
+                ret = extractJsonTokenAsString(jobToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+                if (!ret)
+                {
+                    ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
+                    taskFatalError();
+                }
+                ESP_LOGI(TAG, "Size: %d, Job: %s", jobToken->size, tempStringBuf);
+
+                jsmntok_t *jobIdToken = findToken("jobId", params->payload, jobToken);
+                ret = extractJsonTokenAsString(jobIdToken, (char *)params->payload, &currentJob.jobId[0], COUNT_OF(currentJob.jobId));
+                if (!ret)
+                {
+                    ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
+                    taskFatalError();
+                }
+                ESP_LOGI(TAG, "Job Id: %s", currentJob.jobId);
+
+                /* Trigger job execution by asking AWS for job document.
+                 * - Job execution takes place in awsJobGetAcceptedCallback */
+                AwsIotDescribeJobExecutionRequest describeRequest;
+                describeRequest.executionNumber = 0;
+                describeRequest.includeJobDocument = true;
+                describeRequest.clientToken = NULL;
+                IoT_Error_t rc = aws_iot_jobs_describe(pClient, QOS0, THING_NAME, currentJob.jobId, &describeRequest,
+                                                       tempJobBuf, COUNT_OF(tempJobBuf), NULL, 0);
+                if (SUCCESS != rc)
+                {
+                    ESP_LOGE(TAG, "Unable to publish job description request: %d", rc);
+                    taskFatalError();
+                }
 			}
 		}
 		else
@@ -451,15 +498,17 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 			}
 			else
 			{
+			    xEventGroupSetBits(taskEventGroup, JOB_PROCESSING_BIT);
+
 				ret = extractJsonTokenAsString(queuedToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
 				if (!ret)
 				{
-					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
 					taskFatalError();
 				}
 				ESP_LOGI(TAG, "Size: %d, Queued jobs: %s", queuedToken->size, tempStringBuf);
 
-				xEventGroupSetBits(taskEventGroup, JOB_PROCESSING_BIT);
+				currentJob.inProgress = false;
 
 				/* Currently work through buffer from first job object */
 
@@ -475,7 +524,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 				ret = extractJsonTokenAsString(jobToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
 				if (!ret)
 				{
-					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
 					taskFatalError();
 				}
 				ESP_LOGI(TAG, "Size: %d, Job: %s", jobToken->size, tempStringBuf);
@@ -484,7 +533,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 				ret = extractJsonTokenAsString(jobIdToken, (char *)params->payload, &currentJob.jobId[0], COUNT_OF(currentJob.jobId));
 				if (!ret)
 				{
-					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
 					taskFatalError();
 				}
 				ESP_LOGI(TAG, "Job Id: %s", currentJob.jobId);
@@ -547,7 +596,7 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 		ret = extractJsonTokenAsString(execDocToken, (char *)params->payload, &tempStringBuf[0], COUNT_OF(tempStringBuf));
 		if (!ret)
 		{
-			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
 			taskFatalError();
 		}
 		ESP_LOGI(TAG, "Exec Doc: %s", tempStringBuf);
@@ -557,7 +606,7 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 		ret = extractJsonTokenAsString(jobDocToken, (char *)params->payload, &currentJob.jobDoc[0], COUNT_OF(currentJob.jobDoc));
 		if (!ret)
 		{
-			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
 			taskFatalError();
 		}
 		ESP_LOGI(TAG, "Job Doc: %s", currentJob.jobDoc);
@@ -602,64 +651,133 @@ void awsProcessJob(void)
     ret = extractJsonTokenAsString(jobTypeToken, (char *)currentJob.jobDoc, &tempStringBuf[0], COUNT_OF(tempStringBuf));
     if (!ret)
     {
-        ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
+        ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
         taskFatalError();
     }
     ESP_LOGI(TAG, "Job Type: %s", tempStringBuf);
 
     if (strcmp(tempStringBuf, "ota") == 0)
     {
-        /* For OTA we expect url contained in job doc so search for it*/
-        jsmntok_t *urlToken = findToken("url", currentJob.jobDoc, &jTokens[0]);
-        ret = extractJsonTokenAsString(urlToken, (char *)currentJob.jobDoc, &tempStringBuf[0], COUNT_OF(tempStringBuf));
-        if (!ret)
-        {
-            ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow");
-            taskFatalError();
-        }
-        ESP_LOGI(TAG, "url: %s", tempStringBuf);
+        char appVersionBuf[32];
 
-        ma_ota_err_t otaErr = httpsOtaUpdate(&tempStringBuf[0], s3_root_cert_start);
-        if (otaErr != MA_OTA_SUCCESS)
+        if (currentJob.inProgress)
         {
-            ESP_LOGE(TAG, "HTTPS OTA update failed: %d", otaErr);
-            xEventGroupSetBits(taskEventGroup, JOB_FAILED_BIT);
-
-            switch (otaErr)
+            /* If we have an inProgress OTA job then check if appVersion in job doc is same as the currently running
+             * firmware.
+             *
+             * If so, then could do other validation checks to ascertain as to whether FW is valid, but currently
+             * treat this as a mark of OTA update success.
+             *
+             * If versions are different then OTA failure, most likely due to an app booting and failing validation
+             * checks before connecting to AWS
+             */
+            const esp_partition_t *running = esp_ota_get_running_partition();
+            esp_app_desc_t currentAppInfo;
+            if (esp_ota_get_partition_description(running, &currentAppInfo) == ESP_OK)
             {
-                case MA_OTA_DUP_FW :
+                ESP_LOGW(TAG, "GOT HERE");
+                /* For OTA we expect appVersion in job doc so search for it */
+                jsmntok_t *verToken = findToken("appVersion", (char *)currentJob.jobDoc, &jTokens[0]);
+                ret = extractJsonTokenAsString(verToken, (char *)currentJob.jobDoc, &appVersionBuf[0], COUNT_OF(appVersionBuf));
+                if (!ret)
                 {
-                    snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Tried to install FW with same version as previous");
-                    break;
+                    ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
+                    taskFatalError();
                 }
-                case MA_OTA_INV_FW :
+
+                if (strncmp(appVersionBuf, currentAppInfo.version, strlen(currentAppInfo.version)) == 0)
                 {
-                    snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Installed FW marked as invalid, running previous version");
-                    break;
+                    /* App versions match as expected so can mark job as complete */
+                    ESP_LOGI(TAG, "App version matches job version, OTA job complete");
+                    xEventGroupSetBits(taskEventGroup, JOB_COMPLETED_BIT);
                 }
-                case MA_OTA_HTTP_ERROR :
+                else
                 {
-                    snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Error downloading OTA update");
-                    break;
+                    /* App versions do not match, job failure */
+                    ESP_LOGW(TAG, "Current FW version does not match that of AWS OTA job, job failed");
+                    ESP_LOGW(TAG, "Current FW: %s\tappVersion: %s", currentAppInfo.version, appVersionBuf);
+                    snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg),
+                             "Current FW version does not match version specified in OTA job");
+                    xEventGroupSetBits(taskEventGroup, JOB_FAILED_BIT);
                 }
-                case MA_OTA_ERR :
-                {
-                    snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Generic OTA error occurred");
-                    break;
-                }
-                default :
-                {
-                    snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "OTA error not registered");
-                }
+            }
+            else
+            {
+                ESP_LOGW(TAG, "Cannot check if OTA update is valid, unable to obtain current FW version");
+                snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg),
+                         "Cannot check if OTA update is valid, unable to obtain current FW version");
+                xEventGroupSetBits(taskEventGroup, JOB_FAILED_BIT);
             }
         }
         else
         {
-            ESP_LOGI(TAG, "HTTPS OTA update successful, request restart");
-            xEventGroupSetBits(taskEventGroup, RESTART_REQUESTED_BIT);
+            /* For OTA we expect appVersion in job doc so search for it */
+            jsmntok_t *verToken = findToken("appVersion", (char *)currentJob.jobDoc, &jTokens[0]);
+            ret = extractJsonTokenAsString(verToken, (char *)currentJob.jobDoc, &appVersionBuf[0], COUNT_OF(appVersionBuf));
+            if (!ret)
+            {
+                ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
+                taskFatalError();
+            }
+            ESP_LOGI(TAG, "appVersion: %s", appVersionBuf);
+
+            /* For OTA we expect url contained in job doc so search for it*/
+            jsmntok_t *urlToken = findToken("url", currentJob.jobDoc, &jTokens[0]);
+            ret = extractJsonTokenAsString(urlToken, (char *)currentJob.jobDoc, &tempStringBuf[0], COUNT_OF(tempStringBuf));
+            if (!ret)
+            {
+                ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
+                taskFatalError();
+            }
+            ESP_LOGI(TAG, "url: %s", tempStringBuf);
+
+            ma_ota_err_t otaErr = httpsOtaUpdate(&appVersionBuf[0], &tempStringBuf[0], s3_root_cert_start);
+            if (otaErr != MA_OTA_SUCCESS)
+            {
+                ESP_LOGE(TAG, "HTTPS OTA update failed: %d", otaErr);
+                xEventGroupSetBits(taskEventGroup, JOB_FAILED_BIT);
+
+                switch (otaErr)
+                {
+                    case MA_OTA_DUP_FW :
+                    {
+                        snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Tried to install FW with same version as previous");
+                        break;
+                    }
+                    case MA_OTA_INV_FW :
+                    {
+                        snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Installed FW marked as invalid, running previous version");
+                        break;
+                    }
+                    case MA_OTA_HTTP_ERR :
+                    {
+                        snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Error downloading OTA update");
+                        break;
+                    }
+                    case MA_OTA_JOB_ERR :
+                    {
+                        snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Mismatch between appVersion in job doc and version in binary");
+                        break;
+                    }
+                    case MA_OTA_ERR :
+                    {
+                        snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Generic OTA error occurred");
+                        break;
+                    }
+                    default :
+                    {
+                        snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "OTA error not registered");
+                    }
+                }
+            }
+            else
+            {
+                ESP_LOGI(TAG, "HTTPS OTA update successful, request restart");
+                xEventGroupSetBits(taskEventGroup, RESTART_REQUESTED_BIT);
+            }
         }
     }
-    else if (strcmp(tempStringBuf, "awsMsg") == 0)
+    else if (strcmp(tempStringBuf, "systemLog") == 0)
     {
 
     }
@@ -671,6 +789,8 @@ void awsProcessJob(void)
     else
     {
         ESP_LOGE(TAG, "Job operation type not found: %s", tempStringBuf);
+        snprintf(currentJob.jobFailMsg, COUNT_OF(currentJob.jobFailMsg), "Job operation not found");
+        xEventGroupSetBits(taskEventGroup, JOB_FAILED_BIT);
     }
 }
 
@@ -805,7 +925,7 @@ static void connectToAWS(void)
     /* Loop for AWS processing stage */
     while ((NETWORK_ATTEMPTING_RECONNECT == rc || NETWORK_RECONNECTED == rc || SUCCESS == rc))
     {
-    	ESP_LOGI(TAG, "In AWS processing loop\n\n");
+    	ESP_LOGI(TAG, "\n\nIn AWS processing loop--------------------------------------------");
 
         /* Yield pauses the current thread, allowing MQTT send/receive to occur.
          *      - Essentially use this as a delay, all time spent not working in this
@@ -842,20 +962,23 @@ static void connectToAWS(void)
         {
             ESP_LOGI(TAG, "JOB_READY_BIT processing");
 
-            AwsIotJobExecutionUpdateRequest updateRequest;
-            updateRequest.clientToken = NULL;
-            updateRequest.includeJobDocument = false;
-            updateRequest.includeJobExecutionState = false;
-            updateRequest.statusDetails = NULL;
-            updateRequest.executionNumber = NULL;
-            updateRequest.expectedVersion = 0;
-            updateRequest.status = JOB_EXECUTION_IN_PROGRESS;
-            rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
-            ESP_LOGW(TAG, "%s", tempStringBuf);
-            if (rc != SUCCESS)
+            if (!currentJob.inProgress)
             {
-                ESP_LOGE(TAG, "AWS Job Update notification failed: %d", rc);
-                taskFatalError();
+                AwsIotJobExecutionUpdateRequest updateRequest;
+                updateRequest.clientToken = NULL;
+                updateRequest.includeJobDocument = false;
+                updateRequest.includeJobExecutionState = false;
+                updateRequest.executionNumber = NULL;
+                updateRequest.expectedVersion = 0;
+                updateRequest.status = JOB_EXECUTION_IN_PROGRESS;
+                updateRequest.statusDetails = NULL;
+                rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
+                ESP_LOGW(TAG, "%s", tempStringBuf);
+                if (rc != SUCCESS)
+                {
+                    ESP_LOGE(TAG, "AWS Job Update notification failed: %d", rc);
+                    taskFatalError();
+                }
             }
 
             /* Try and execute the job */
@@ -872,10 +995,10 @@ static void connectToAWS(void)
             updateRequest.clientToken = NULL;
             updateRequest.includeJobDocument = false;
             updateRequest.includeJobExecutionState = false;
-            updateRequest.statusDetails = NULL;
             updateRequest.executionNumber = NULL;
             updateRequest.expectedVersion = 0;
             updateRequest.status = JOB_EXECUTION_SUCCEEDED;
+            updateRequest.statusDetails = NULL;
             rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
             if (rc != SUCCESS)
             {
@@ -883,7 +1006,7 @@ static void connectToAWS(void)
                 taskFatalError();
             }
 
-            /* Reset all in job in completion flags to continue processing jobs */
+            /* Reset all in job in completion flags to continue processing other jobs */
             xEventGroupClearBits(taskEventGroup, JOB_PROCESSING_BIT | JOB_COMPLETED_BIT | JOB_READY_BIT);
         }
 
@@ -896,10 +1019,10 @@ static void connectToAWS(void)
             updateRequest.clientToken = NULL;
             updateRequest.includeJobDocument = false;
             updateRequest.includeJobExecutionState = false;
-            updateRequest.statusDetails = currentJob.jobFailMsg;
             updateRequest.executionNumber = NULL;
             updateRequest.expectedVersion = 0;
             updateRequest.status = JOB_EXECUTION_FAILED;
+            updateRequest.statusDetails = NULL;
             rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
             if (rc != SUCCESS)
             {
@@ -907,14 +1030,14 @@ static void connectToAWS(void)
                 taskFatalError();
             }
 
-            /* Reset all in job in completion flags to continue processing jobs */
-            xEventGroupClearBits(taskEventGroup, JOB_PROCESSING_BIT | JOB_COMPLETED_BIT | JOB_READY_BIT);
+            /* Reset all in job in completion flags to continue processing other jobs */
+            xEventGroupClearBits(taskEventGroup, JOB_PROCESSING_BIT | JOB_COMPLETED_BIT | JOB_READY_BIT | JOB_FAILED_BIT);
         }
 
         ESP_LOGI(TAG, "Stack remaining for task '%s' is %d bytes", pcTaskGetTaskName(NULL), uxTaskGetStackHighWaterMark(NULL));
-        //vTaskDelay(5000 / portTICK_PERIOD_MS);
     }
 
+    /* If the while loop exits unintentionally then try and unsub and disconnect before exiting */
     unsubAndDisconnnectAWS();
 }
 

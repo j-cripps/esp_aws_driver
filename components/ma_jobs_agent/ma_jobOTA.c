@@ -105,7 +105,7 @@ static void http_cleanup(esp_http_client_handle_t client)
 
 /* Function Definitions
  * -------------------------------------------------------------------------- */
-esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart)
+esp_err_t httpsOtaUpdate(const char* appVersion, const char* url, const uint8_t* serverCertPemStart)
 {
     esp_err_t err;
 
@@ -135,7 +135,7 @@ esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart)
     if (client == NULL)
     {
         ESP_LOGE(TAG, "Failed to initialise HTTP connection");
-        return MA_OTA_HTTP_ERROR;
+        return MA_OTA_HTTP_ERR;
     }
 
     err = esp_http_client_open(client, 0);
@@ -143,7 +143,7 @@ esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart)
     {
         ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
-        return MA_OTA_HTTP_ERROR;
+        return MA_OTA_HTTP_ERR;
     }
 
     esp_http_client_fetch_headers(client);
@@ -164,7 +164,7 @@ esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart)
         {
             ESP_LOGE(TAG, "Error: SSL data read error");
             http_cleanup(client);
-            return MA_OTA_HTTP_ERROR;
+            return MA_OTA_HTTP_ERR;
         }
         else if (data_read > 0)
         {
@@ -177,6 +177,13 @@ esp_err_t httpsOtaUpdate(const char* url, const uint8_t* serverCertPemStart)
                     memcpy(&new_app_info, &otaWriteData[sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t)],
                           sizeof(esp_app_desc_t));
                     ESP_LOGI(TAG, "New firmware version: %s", new_app_info.version);
+
+                    if (strncmp(appVersion, new_app_info.version, strlen(appVersion)) != 0)
+                    {
+                        ESP_LOGW(TAG, "Job document error, listed version: %s\tbinary version: %s", appVersion, new_app_info.version);
+                        http_cleanup(client);
+                        return MA_OTA_JOB_ERR;
+                    }
 
                     esp_app_desc_t running_app_info;
                     if (esp_ota_get_partition_description(running, &running_app_info) == ESP_OK)
