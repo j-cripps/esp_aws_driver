@@ -1,12 +1,12 @@
 /**
- * @file ma_jobOTA.c
+ * @file    ma_jobOTA.c
  *
- * @brief Contains functions relating to the OTA (over-the-air) update feature
+ * @brief   Contains functions relating to the OTA (over-the-air) update feature via HTTPS
  *
- * @note Based on the 'advanced_https_ota_example' in ESP-IDF release/v4.0
+ * @note    Based on the 'advanced_https_ota_example' in ESP-IDF release/v4.0
  *
- * @author Jack Cripps // jackc@monitoraudio.com
- * @date 25/10/2019
+ * @author  Jack Cripps // jackc@monitoraudio.com
+ * @date    25/10/2019
  */
 
 #include "ma_jobOTA.h"
@@ -36,25 +36,33 @@
 /* -------------------------------------------------------------------------- */
 
 /**
- * @brief Size of OTA data write buffer in bytes
+ * @brief   Size of OTA data write buffer in bytes
  */
 #define BUFFSIZE 1024
+
 
 /* -------------------------------------------------------------------------- */
 
 
-static const char *TAG = "ma_JobOTA";
+static const char *TAG = "ma_JobOTA";   /**< ESP-IDF Logging file name */
 
-/**
- * @brief an ota data write buffer ready to write to the flash
- */
-static char otaWriteData[BUFFSIZE + 1] = { 0 };
+static char otaWriteData[BUFFSIZE + 1] = { 0 };     /**< OTA data write buffer ready to write to the flash */
 
 
 /* Private Function Prototypes
  * -------------------------------------------------------------------------- */
+
+/**
+ * @brief   Point of no return function for when code hits unrecoverable error
+ */
 static void __attribute__((noreturn)) task_fatal_error();
-static esp_err_t validate_image_header(esp_app_desc_t *new_app_info);
+
+/**
+ * @brief   Called to close http connection and free any resources used by a http client after it has finished all work
+ *          or encountered an error
+ *
+ * @param[in]   client  The esp http client handle to close and clean
+ */
 static void http_cleanup(esp_http_client_handle_t client);
 
 
@@ -69,30 +77,6 @@ static void __attribute__((noreturn)) task_fatal_error()
     {
         ;
     }
-}
-
-static esp_err_t validate_image_header(esp_app_desc_t *new_app_info)
-{
-    if (new_app_info == NULL)
-    {
-        ESP_LOGE(TAG, "App info null in validation");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    esp_app_desc_t runningAppInfo;
-    if (esp_ota_get_partition_description(running, &runningAppInfo))
-    {
-        ESP_LOGI(TAG, "Running firmware version: %s", runningAppInfo.version);
-    }
-
-    if (memcmp(new_app_info->version, runningAppInfo.version, sizeof(new_app_info->version)) == 0)
-    {
-        ESP_LOGW(TAG, "Current running version is same as new version, update failed");
-        return ESP_FAIL;
-    }
-
-    return ESP_OK;
 }
 
 
