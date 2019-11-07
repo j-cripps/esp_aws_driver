@@ -34,7 +34,6 @@
 
 
 /* -------------------------------------------------------------------------- */
-
 /**
  * @brief   Size of OTA data write buffer in bytes
  */
@@ -51,7 +50,6 @@ static char otaWriteData[BUFFSIZE + 1] = { 0 };     /**< OTA data write buffer r
 
 /* Private Function Prototypes
  * -------------------------------------------------------------------------- */
-
 /**
  * @brief   Point of no return function for when code hits unrecoverable error
  */
@@ -61,7 +59,7 @@ static void __attribute__((noreturn)) task_fatal_error();
  * @brief   Called to close http connection and free any resources used by a http client after it has finished all work
  *          or encountered an error
  *
- * @param[in]   client  The esp http client handle to close and clean
+ * @param[in]   client  The esp http client handle to close and clean up
  */
 static void http_cleanup(esp_http_client_handle_t client);
 
@@ -256,5 +254,3 @@ esp_err_t httpsOtaUpdate(const char* appVersion, const char* url, const uint8_t*
 
     return MA_OTA_SUCCESS;
 }
-
-

@@ -48,36 +48,41 @@
 
 
 /* -------------------------------------------------------------------------- */
-
-
+/**
+ * @brief   Macro for compile time array sizing
+ */
 #define COUNT_OF(x) ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
 
 
 /* -------------------------------------------------------------------------- */
-
-
+/**
+ * @brief   WiFi SSID and pass provided here as defines, before being implemented to be sent into task
+ *          during WiFi provisioning step
+ */
 #define EXAMPLE_WIFI_SSID "Monitor Audio WiFi"
 #define EXAMPLE_WIFI_PASS "des1gnf0rs0und"
 
 
 /* -------------------------------------------------------------------------- */
-
+/**
+ * @brief   A job as a structure
+ */
 typedef struct jobStruct {
-    char jobId[32];
-    char jobDoc[256];
-    char jobFailMsg[256];
-    bool inProgress;
+    char jobId[32];     /**< ID of the job obtained from AWS jobs service */
+    char jobDoc[256];   /**< The job document obtained from AWS jobs service */
+    char jobFailMsg[256];   /**< If a job fails, store failure message in here to send back to AWS */
+    bool inProgress;    /**< Flag to indicate whether a job came down from AWS as in progress or not(queued) */
 } jobDefinition_t;
 
 /* -------------------------------------------------------------------------- */
 
 
-static const char *TAG = "ma_JobAgent";
+static const char *TAG = "ma_JobAgent"; /**< ESP-IDF logging file name */
 
-const char *THING_NAME = "ESP32TestThing";
+const char *THING_NAME = "ESP32TestThing";  /**< The unique name of this unit, used by AWS, temporarily here but should be stored in flash at unit production time */
 
 /**
- * @brief Event group to signal when we are connected & ready to make a request
+ * @brief   Event group to signal when we are connected & ready to make a request
  */
 EventGroupHandle_t taskEventGroup;
 
@@ -86,17 +91,17 @@ const int WIFI_CONNECTED_BIT = BIT1;        /**< Whether WiFi stack is connected
 const int RESTART_REQUESTED_BIT = BIT2;     /**< Whether task requests restart of unit (usually after successful OTA update) */
 const int WORK_COMPLETED_BIT = BIT3;        /**< Task completed all work so can be stopped */
 const int JOB_READY_BIT = BIT4;             /**< Whether job ready to be processed */
-const int JOB_PROCESSING_BIT = BIT5;       /**< Whether an AWS job is currently being processed */
+const int JOB_PROCESSING_BIT = BIT5;        /**< Whether an AWS job is currently being processed */
 const int JOB_COMPLETED_BIT = BIT6;         /**< AWS job stage completed flag */
 const int JOB_FAILED_BIT = BIT7;            /**< Generic job failed flag */
 const int UPDATE_FAILED_BIT = BIT8;         /**< Software update failed flag */
 
 
 /**
- * @brief CA Root certificate
- *        device ("Thing") certificate
- *        device ("Thing") key
- *        s3 root cert for connecting to AWS S3
+ * @brief   - CA Root certificate
+ *          - device ("Thing") certificate
+ *          - device ("Thing") key
+ *          - s3 root cert for connecting to AWS S3
  */
 extern const uint8_t aws_root_ca_pem_start[] asm("_binary_aws_root_ca_pem_start");
 extern const uint8_t aws_root_ca_pem_end[] asm("_binary_aws_root_ca_pem_end");
@@ -108,12 +113,12 @@ extern const uint8_t s3_root_cert_start[] asm("_binary_s3_root_cert_pem_start");
 extern const uint8_t s3_root_cert_end[] asm("_binary_s3_root_cert_pem_end");
 
 /**
- * @brief Default MQTT HOST URL is pulled from the aws_iot_config.h
+ * @brief   Default MQTT HOST URL is pulled from the aws_iot_config.h
  */
 char HostAddress[255] = AWS_IOT_MQTT_HOST;
 
 /**
- * @brief Default MQTT port is pulled from the aws_iot_config.h
+ * @brief   Default MQTT port is pulled from the aws_iot_config.h
  */
 uint32_t port = AWS_IOT_MQTT_PORT;
 
@@ -138,7 +143,6 @@ static char getJobUpdateAcceptedSubBuf[128];
 static char getJobUpdateRejectedSubBuf[128];
 static char tempJobBuf[128];
 static char tempStringBuf[512];
-//static char currentJobIdBuf[64];
 
 /* Job storage */
 static jobDefinition_t currentJob;
@@ -149,74 +153,153 @@ static jsmntok_t jTokens[128];
 
 /* Private Function Prototypes
  * -------------------------------------------------------------------------- */
-
-static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source, char *dest, uint16_t destLen);
+/**
+ * @brief   Function when an unrecoverable error has occurred. Task must be terminated at this point
+ */
 static void taskFatalError(void);
+
+/**
+ * @brief   The event handler callback listening for WiFi stack events
+ *
+ * @param   ctx[in]   Event context
+ * @param   event[in] The event - to check if WiFi connect/disconnect event etc
+ *
+ * @return
+ *      - ESP_OK
+ *      - ESP_FAIL
+ */
 static esp_err_t event_handler(void *ctx, system_event_t *event);
+
+/**
+ * @brief   Pull out a JSON token parsed by JSMN as a string
+ *
+ * @param   pToken[in]    Pointer to the JSMN token to extract as a string
+ * @param   source[in]    The source JSON file buffer which was parsed by JSMN
+ * @param   dest[out]     An output buffer to store the extracted string
+ * @param   destLen[in]   Length of dest buffer including null termination space
+ *
+ * @return  Status of extraction, can fail due to token being NULL or destination being too small
+ */
+static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source, char *dest, uint16_t destLen);
+
+/**
+ * @brief   Check whether the WiFi credentials are present and valid (i.e provisioned)
+ *
+ * @note    Currently always returns true until WiFi provisioning functionality set up the
+ *          WiFi details are defined at the top of the file
+ *
+ * @return  Status of provisioning, false when not provisioned or provisioned details are not valid
+ */
 static bool wifiProvisionedCheck(void);
+
+/**
+ * @brief   Initialise and connect the WiFi stack - waits on being provisioned before proceeding with this function
+ */
 static void initialiseWifi(void);
+
+/**
+ * @brief   Firmware diagnostic test to check if the app just booted is valid
+ *
+ * @note    Not currently implemented - Always returns true
+ *
+ * @return  Status of diagnostic test
+ */
 static bool diagnostic(void);
+
+/**
+ * @brief   Responsible for running the diagnostic test and checking whether the app that has booted is valid. If not
+ *          then rollback the app to a previously valid version, else mark app as valid and continue with normal
+ *          running of the program
+ */
 static void bootValidityCheck(void);
+
+/**
+ * @brief   Check for NVS errors upon boot, this may not be able to be called in production as could erase flash
+ *
+ * @return  Success of the check, or one of underlying flash errors if failed
+ */
 static esp_err_t nvsBootCheck(void);
+
+/**
+ * @brief   Check if OTA partitions are configured correctly upon boot
+ */
 static void otaBootCheck(void);
 
+/**
+ * @brief   Callback for when disconnect event from AWS occurs
+ */
 static void disconnectCallbackHandler(AWS_IoT_Client *pClient, void *data);
 
+/**
+ * @brief   Callback for when get pending jobs request from AWS is rejected
+ */
 static void awsGetRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                           IoT_Publish_Message_Params *params, void *pData);
+/**
+ * @brief   Callback for when get pending jobs request from AWS is accepted
+ *
+ * @note    This is where a list of in progress and queued jobs are gathered from AWS.
+ *          - In progress jobs are always processed first and in order as these are usually to do with jobs that
+ *            required SW restart such as OTA updates, and so validity of the update must be established before
+ *            proceeding
+ *
+ *          - Queued jobs could be processed in any order, but currently processed in order dictated by AWS
+ *
+ */
 static void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                           IoT_Publish_Message_Params *params, void *pData);
+/**
+ * @brief   Callback for when job description request to AWS is accepted
+ *
+ * @note    This is where the job execution doc and job doc are parsed to find out job type and details
+ */
 static void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                              IoT_Publish_Message_Params *params, void *pData);
+/**
+ * @brief   Callback for a specific job update message, not currently used, instead using job agnostic callback
+ *          functions below as this level of specificity is unnecessary
+ */
 static void awsGetJobUpdateCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                            IoT_Publish_Message_Params *params, void *pData);
+/**
+ * @brief   Callback for AWS job update response if the update request (IN_PROGRESS, FAILED etc) is accepted
+ */
 static void awsUpdateAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                              IoT_Publish_Message_Params *params, void *pData);
+/**
+ * @brief   Callback for AWS job update response if the update request (IN_PROGRESS, FAILED etc) is rejected
+ */
 static void awsUpdateRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                              IoT_Publish_Message_Params *params, void *pData);
+/**
+ * @brief   Once all the details (job doc) of a job is obtained from AWS we can begin executing it, whether in progress
+ *          job or a new queued job
+ */
 static void awsProcessJob(void);
 
+/**
+ * @brief   Initialise and connect to AWS jobs service. Subscribes to AWS jobs services.
+ *
+ * @note    Currently treat every connect attempt as a fresh session, meaning if accidental disconnect occurs the unit
+ *          does not attempt to subscribe twice to topics as this is undefined behaviour
+ */
 static void connectToAWS(void);
 
+/**
+ * @brief   Unsubscribe and disconnect from AWS before exiting this task or requesting a restart, or setting work completed bit.
+ */
 static void unsubAndDisconnnectAWS(void);
 
 
-/* -------------------------------------------------------------------------- */
-
-static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source, char *dest, uint16_t destLen)
-{
-    /* Don't copy if token is null (i.e token could not be found in json document */
-    if (pToken == NULL)
-    {
-        return false;
-    }
-
-	uint16_t sourceLen = pToken->end - pToken->start;
-
-	/* Don't copy if no room in dest buffer for whole string + null terminator */
-	if (sourceLen + 1 > destLen)
-	{
-		return false;
-	}
-	else
-	{
-		/* Copy from start of token in buffer over to destination*/
-		memcpy(dest, &source[pToken->start], sourceLen);
-		/* Append null terminator */
-		dest[sourceLen] = '\0';
-	}
-
-	return true;
-}
-
-
+/* Function Definitions
+ * -------------------------------------------------------------------------- */
 static void taskFatalError(void)
 {
-	while (1)
-	{
-		ESP_LOGE(TAG, "Fatal error in task, no return");
-		vTaskDelay(10000 / portTICK_PERIOD_MS);
-	}
+    while (1)
+    {
+        ESP_LOGE(TAG, "Fatal error in task, no return");
+        vTaskDelay(10000 / portTICK_PERIOD_MS);
+    }
 
     (void)vTaskDelete(NULL);
 }
@@ -241,6 +324,33 @@ static esp_err_t event_handler(void *ctx, system_event_t *event)
         break;
     }
     return ESP_OK;
+}
+
+
+static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source, char *dest, uint16_t destLen)
+{
+    /* Don't copy if token is null (i.e token could not be found in json document) */
+    if (pToken == NULL)
+    {
+        return false;
+    }
+
+	uint16_t sourceLen = pToken->end - pToken->start;
+
+	/* Don't copy if no room in dest buffer for whole string + null terminator */
+	if (sourceLen + 1 > destLen)
+	{
+		return false;
+	}
+	else
+	{
+		/* Copy from start of token in buffer over to destination*/
+		memcpy(dest, &source[pToken->start], sourceLen);
+		/* Append null terminator */
+		dest[sourceLen] = '\0';
+	}
+
+	return true;
 }
 
 
