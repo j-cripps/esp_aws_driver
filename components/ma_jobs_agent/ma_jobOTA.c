@@ -252,5 +252,6 @@ esp_err_t httpsOtaUpdate(const char* appVersion, const char* url, const uint8_t*
         return MA_OTA_ERR;
     }
 
+    http_cleanup(client);
     return MA_OTA_SUCCESS;
 }

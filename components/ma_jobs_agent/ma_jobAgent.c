@@ -183,6 +183,17 @@ static esp_err_t event_handler(void *ctx, system_event_t *event);
 static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source, char *dest, uint16_t destLen);
 
 /**
+ * @brief   Take a job failure message and format it into a valid status details JSON object for AWS
+ *
+ * @param[in]   errMessage  The error message, usually stored as partof the current jobobject
+ * @param[out]  destBuf     A destination buffer to store the formatted string
+ * @param[out]  destBufLen  Length of the destination buffer in bytes
+ *
+ * @return  Status of function, failure indicates destination buffer too small to fit message
+ */
+static bool formatJobErrorStatusDetails(const char *errMessage, char *destBuf, uint16_t destBufLen);
+
+/**
  * @brief   Check whether the WiFi credentials are present and valid (i.e provisioned)
  *
  * @note    Currently always returns true until WiFi provisioning functionality set up the
@@ -351,6 +362,25 @@ static bool extractJsonTokenAsString(const jsmntok_t *pToken, const char *source
 	}
 
 	return true;
+}
+
+
+static bool formatJobErrorStatusDetails(const char *errMessage, char *destBuf, uint16_t destBufLen)
+{
+    if (errMessage == NULL || destBuf == NULL || destBufLen < 10 || (strlen(errMessage) + 10 > destBufLen))
+    {
+        ESP_LOGE(TAG, "Error formatting job error status");
+        return false;
+    }
+
+    int n = snprintf(destBuf, destBufLen, "{\"errMessage\":\"%s\"}", errMessage);
+    if (n < 0 || n > destBufLen)
+    {
+        ESP_LOGE(TAG, "Error formatting job error status");
+        return false;
+    }
+
+    return true;
 }
 
 
@@ -576,7 +606,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
                     ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
                     taskFatalError();
                 }
-                ESP_LOGI(TAG, "Job Id: %s", currentJob.jobId);
+                // ESP_LOGI(TAG, "Job Id: %s", currentJob.jobId);
 
                 /* Trigger job execution by asking AWS for job document.
                  * - Job execution takes place in awsJobGetAcceptedCallback */
@@ -646,7 +676,7 @@ void awsGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uin
 					ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
 					taskFatalError();
 				}
-				ESP_LOGI(TAG, "Job Id: %s", currentJob.jobId);
+				// ESP_LOGI(TAG, "Job Id: %s", currentJob.jobId);
 
 				/* Trigger job execution by asking AWS for job document.
 				 * - Job execution takes place in awsJobGetAcceptedCallback */
@@ -709,7 +739,7 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
 			taskFatalError();
 		}
-		ESP_LOGI(TAG, "Exec Doc: %s", tempStringBuf);
+		// ESP_LOGI(TAG, "Exec Doc: %s", tempStringBuf);
 
 		/* Then find job document inside execution document and store in current job*/
 		jsmntok_t *jobDocToken = findToken("jobDocument", params->payload, execDocToken);
@@ -719,7 +749,7 @@ void awsJobGetAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, 
 			ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
 			taskFatalError();
 		}
-		ESP_LOGI(TAG, "Job Doc: %s", currentJob.jobDoc);
+		// ESP_LOGI(TAG, "Job Doc: %s", currentJob.jobDoc);
 
 		/* Since a job has been found, set JOB_READY_BIT */
         xEventGroupSetBits(taskEventGroup, JOB_READY_BIT);
@@ -764,7 +794,7 @@ void awsProcessJob(void)
         ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
         taskFatalError();
     }
-    ESP_LOGI(TAG, "Job Type: %s", tempStringBuf);
+    // ESP_LOGI(TAG, "Job Type: %s", tempStringBuf);
 
     if (strcmp(tempStringBuf, "ota") == 0)
     {
@@ -785,7 +815,6 @@ void awsProcessJob(void)
             esp_app_desc_t currentAppInfo;
             if (esp_ota_get_partition_description(running, &currentAppInfo) == ESP_OK)
             {
-                ESP_LOGW(TAG, "GOT HERE");
                 /* For OTA we expect appVersion in job doc so search for it */
                 jsmntok_t *verToken = findToken("appVersion", (char *)currentJob.jobDoc, &jTokens[0]);
                 ret = extractJsonTokenAsString(verToken, (char *)currentJob.jobDoc, &appVersionBuf[0], COUNT_OF(appVersionBuf));
@@ -829,7 +858,7 @@ void awsProcessJob(void)
                 ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
                 taskFatalError();
             }
-            ESP_LOGI(TAG, "appVersion: %s", appVersionBuf);
+            // ESP_LOGI(TAG, "appVersion: %s", appVersionBuf);
 
             /* For OTA we expect url contained in job doc so search for it*/
             jsmntok_t *urlToken = findToken("url", currentJob.jobDoc, &jTokens[0]);
@@ -839,7 +868,7 @@ void awsProcessJob(void)
                 ESP_LOGE(TAG, "JSON token extraction fail, buffer overflow or token is NULL");
                 taskFatalError();
             }
-            ESP_LOGI(TAG, "url: %s", tempStringBuf);
+            // ESP_LOGI(TAG, "url: %s", tempStringBuf);
 
             ma_ota_err_t otaErr = httpsOtaUpdate(&appVersionBuf[0], &tempStringBuf[0], s3_root_cert_start);
             if (otaErr != MA_OTA_SUCCESS)
@@ -908,7 +937,7 @@ void awsProcessJob(void)
 static void awsUpdateAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                     IoT_Publish_Message_Params *params, void *pData)
 {
-    ESP_LOGI(TAG, "\nJOB_UPDATE_TOPIC / accepted callback");
+    ESP_LOGI(TAG, "JOB_UPDATE_TOPIC / accepted callback");
     ESP_LOGI(TAG, "topic: %.*s", topicNameLen, topicName);
     ESP_LOGI(TAG, "payload: %.*s", (int) params->payloadLen, (char *)params->payload);
 }
@@ -916,7 +945,7 @@ static void awsUpdateAcceptedCallbackHandler(AWS_IoT_Client *pClient, char *topi
 static void awsUpdateRejectedCallbackHandler(AWS_IoT_Client *pClient, char *topicName, uint16_t topicNameLen,
                                     IoT_Publish_Message_Params *params, void *pData)
 {
-    ESP_LOGI(TAG, "\nJOB_UPDATE_TOPIC / rejected callback");
+    ESP_LOGI(TAG, "JOB_UPDATE_TOPIC / rejected callback");
     ESP_LOGI(TAG, "topic: %.*s", topicNameLen, topicName);
     ESP_LOGI(TAG, "payload: %.*s", (int) params->payloadLen, (char *)params->payload);
 
@@ -1035,7 +1064,7 @@ static void connectToAWS(void)
     /* Loop for AWS processing stage */
     while ((NETWORK_ATTEMPTING_RECONNECT == rc || NETWORK_RECONNECTED == rc || SUCCESS == rc))
     {
-    	ESP_LOGI(TAG, "\n\nIn AWS processing loop--------------------------------------------");
+    	ESP_LOGI(TAG, "In AWS processing loop------------------------------------------------------");
 
         /* Yield pauses the current thread, allowing MQTT send/receive to occur.
          *      - Essentially use this as a delay, all time spent not working in this
@@ -1078,17 +1107,17 @@ static void connectToAWS(void)
                 updateRequest.clientToken = NULL;
                 updateRequest.includeJobDocument = false;
                 updateRequest.includeJobExecutionState = false;
-                updateRequest.executionNumber = NULL;
+                updateRequest.executionNumber = 0;
                 updateRequest.expectedVersion = 0;
                 updateRequest.status = JOB_EXECUTION_IN_PROGRESS;
                 updateRequest.statusDetails = NULL;
                 rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
-                ESP_LOGW(TAG, "%s", tempStringBuf);
                 if (rc != SUCCESS)
                 {
                     ESP_LOGE(TAG, "AWS Job Update notification failed: %d", rc);
                     taskFatalError();
                 }
+                // ESP_LOGW(TAG, "%s", tempStringBuf);
             }
 
             /* Try and execute the job */
@@ -1105,7 +1134,7 @@ static void connectToAWS(void)
             updateRequest.clientToken = NULL;
             updateRequest.includeJobDocument = false;
             updateRequest.includeJobExecutionState = false;
-            updateRequest.executionNumber = NULL;
+            updateRequest.executionNumber = 0;
             updateRequest.expectedVersion = 0;
             updateRequest.status = JOB_EXECUTION_SUCCEEDED;
             updateRequest.statusDetails = NULL;
@@ -1125,14 +1154,23 @@ static void connectToAWS(void)
         {
             ESP_LOGW(TAG, "JOB_FAILED_BIT processing");
 
+            /* Must format jobFailMsg into key-value pair for JSON doc to AWS */
+            char tempRetBuf[128];
+            bool ret = formatJobErrorStatusDetails(currentJob.jobFailMsg, tempRetBuf, COUNT_OF(tempRetBuf));
+            ESP_LOGW(TAG, "Error message: %s", tempRetBuf);
+            if (!ret)
+            {
+                taskFatalError();
+            }
+
             AwsIotJobExecutionUpdateRequest updateRequest;
             updateRequest.clientToken = NULL;
             updateRequest.includeJobDocument = false;
             updateRequest.includeJobExecutionState = false;
-            updateRequest.executionNumber = NULL;
+            updateRequest.executionNumber = 0;
             updateRequest.expectedVersion = 0;
             updateRequest.status = JOB_EXECUTION_FAILED;
-            updateRequest.statusDetails = NULL;
+            updateRequest.statusDetails = tempRetBuf;
             rc = aws_iot_jobs_send_update(&client, QOS0, THING_NAME, currentJob.jobId, &updateRequest, tempJobBuf, COUNT_OF(tempJobBuf), tempStringBuf, COUNT_OF(tempStringBuf));
             if (rc != SUCCESS)
             {
