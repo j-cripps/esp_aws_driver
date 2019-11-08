@@ -1,0 +1,3 @@
+[submodule "components/ma_jobAgent"]
+	path = components/ma_jobAgent
+	url = http://192.168.68.97/firmware-development/ma_jobAgent.git
