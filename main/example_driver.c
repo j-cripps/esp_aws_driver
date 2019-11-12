@@ -21,6 +21,7 @@
 #include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_event.h"
 
 #include "nvs.h"
 #include "nvs_flash.h"
@@ -43,5 +44,26 @@ void app_main()
         err = nvs_flash_init();
     }
 
+    /* Initialise jobAgent event group */
+    jobAgentEventGroup = xEventGroupCreate();
+
+    /* Minimum stack size for this task is used here, do not reduce */
     xTaskCreate(&job_agent_task, "job_agent_task", 1024 * 6, NULL, 5, NULL);
+
+    while (1)
+    {
+        if ((xEventGroupGetBits(jobAgentEventGroup) & JOB_OTA_RESTART_BIT) != 0)
+        {
+            ESP_LOGW(TAG, "Job Agent requested a restart, restarting now");
+            esp_restart();
+        }
+
+        if ((xEventGroupGetBits(jobAgentEventGroup) & JOB_OTA_REQUEST_BIT) != 0)
+        {
+            ESP_LOGW(TAG, "Job Agent has an OTA update request, approve by setting reply bit");
+            xEventGroupSetBits(jobAgentEventGroup, JOB_OTA_REPLY_BIT);
+        }
+
+        vTaskDelay(5000 / portTICK_PERIOD_MS);
+    }
 }
