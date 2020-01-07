@@ -6,7 +6,7 @@
  * The contents within the app_main func should be moved to any program that
  * makes use of the ma_jobAgent component.
  *
- * @author Jack Cripps // jackc@monitoraudio.com
+ * @author Jack Cripps
  * @date 11/09/2019
  *
  */
